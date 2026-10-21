@@ -27,6 +27,7 @@ import type { Task } from '../types/task';
 import { formatMs, parseSrt, parseTimecode, serializeSrt, type SrtLine } from '../lib/srt';
 import { calculateCps, breakVietnameseLines, splitLineSmart } from '../lib/nlpSegmenter';
 import { sanitizeSubtitles, isOcrGarbageLine, isLineUntranslated } from '../lib/subtitleSanitizer';
+import { subscribeVideoPreviewClock } from '../lib/videoPreviewClock';
 
 type Props = {
   tasks: Task[];
@@ -213,6 +214,15 @@ export default function SubtitleEditor({
     () => lines.findIndex((l) => currentTimeMs >= l.startMs && currentTimeMs < l.endMs),
     [lines, currentTimeMs]
   );
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !isActive) return;
+    return subscribeVideoPreviewClock(video, (timeMs) => {
+      currentTimeMsRef.current = timeMs;
+      setCurrentTimeMs(timeMs);
+    });
+  }, [isActive, mediaUrl, hasOriginalSrt]);
 
   const detectedGarbageCount = useMemo(() => {
     if (lines.length === 0) return 0;
@@ -701,6 +711,7 @@ export default function SubtitleEditor({
     const video = videoRef.current;
     if (!video || !Number.isFinite(ms)) return;
     video.currentTime = Math.max(0, ms / 1000);
+    currentTimeMsRef.current = Math.max(0, ms);
     setCurrentTimeMs(Math.max(0, ms));
   };
 
@@ -1718,7 +1729,6 @@ export default function SubtitleEditor({
                   ref={videoRef}
                   src={mediaUrl}
                   controls
-                  onTimeUpdate={(e) => setCurrentTimeMs(e.currentTarget.currentTime * 1000)}
                   onLoadedMetadata={(e) =>
                     setDurationMs(
                       Number.isFinite(e.currentTarget.duration) ? e.currentTarget.duration * 1000 : 0
