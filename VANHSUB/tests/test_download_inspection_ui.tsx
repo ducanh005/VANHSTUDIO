@@ -31,6 +31,8 @@ async function main() {
   await pending;
   assert.equal(backgroundDownloadManager.getState().active?.isDownloading, false);
   assert.equal(backgroundDownloadManager.getState().active?.inspection, report);
+  assert.equal(backgroundDownloadManager.getState().active?.progress.status, 'completed');
+  assert.equal(backgroundDownloadManager.getState().active?.progress.percent, 100);
   console.log('PASS: IPC option, processing state, completion ordering, duplicate prevention and report persistence');
 
   const missing = renderToStaticMarkup(<MediaInspectionPanel report={report} />);

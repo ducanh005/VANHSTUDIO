@@ -765,6 +765,20 @@ export default function HomePage() {
                   <Maximize2 className="h-3.5 w-3.5 text-text-muted" />
                   <span>Mở chi tiết</span>
                 </button>
+                {!activeDownload.isDownloading && activeDownload.progress.status === 'completed' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      backgroundDownloadManager.dismiss();
+                      setDownloadModalOpen(true);
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1 text-xs font-medium text-white hover:bg-accent-hover transition-colors cursor-pointer"
+                    title="Dọn lượt tải cũ và mở hộp thoại tải video tiếp theo"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    <span>Tải video khác</span>
+                  </button>
+                )}
                 {!activeDownload.isDownloading && (
                   <button
                     type="button"

@@ -89,13 +89,41 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({
   const isDownloading = Boolean(activeDownload?.isDownloading);
   const progress = activeDownload?.progress || null;
 
+  // Xác định video hiện tại trong modal đã hoàn tất tải và tạo tác vụ hay chưa
+  const isCurrentCompleted = Boolean(
+    !isDownloading &&
+    activeDownload &&
+    activeDownload.progress?.status === 'completed' &&
+    ((activeDownload.cleanUrl && mediaInfo?.cleanUrl && activeDownload.cleanUrl === mediaInfo.cleanUrl) ||
+     (activeDownload.url && urlInput.trim() && activeDownload.url === urlInput.trim()) ||
+     (activeDownload.completedTask && (activeDownload.title === customTitle || activeDownload.title === mediaInfo?.title)))
+  );
+
   // Đồng bộ thông tin khi mở modal trong lúc đang có tải ngầm
   useEffect(() => {
     if (activeDownload && open) {
-      if (!urlInput) setUrlInput(activeDownload.url);
-      if (activeDownload.isDownloading) setCleanMetadata(activeDownload.cleanMetadata !== false);
-      if (!customTitle) setCustomTitle(activeDownload.title);
-      if (!mediaInfo) {
+      if (activeDownload.isDownloading) {
+        if (!urlInput) setUrlInput(activeDownload.url);
+        setCleanMetadata(activeDownload.cleanMetadata !== false);
+        if (!customTitle) setCustomTitle(activeDownload.title);
+        if (!mediaInfo) {
+          setMediaInfo({
+            url: activeDownload.url,
+            cleanUrl: activeDownload.cleanUrl,
+            platform: activeDownload.platform,
+            title: activeDownload.title,
+            author: activeDownload.author,
+            duration: activeDownload.duration,
+            durationFormatted: activeDownload.durationFormatted,
+            thumbnail: activeDownload.thumbnail,
+            availableQualities: [{ id: activeDownload.quality || '1080p', label: activeDownload.quality || '1080p' }],
+            noWatermarkUrl: activeDownload.noWatermarkUrl,
+          });
+        }
+      } else if (!urlInput && !initialUrl && activeDownload.progress?.status === 'completed' && !mediaInfo) {
+        // Mở lại xem kết quả của video vừa hoàn tất
+        setUrlInput(activeDownload.url);
+        setCustomTitle(activeDownload.title);
         setMediaInfo({
           url: activeDownload.url,
           cleanUrl: activeDownload.cleanUrl,
@@ -110,7 +138,7 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({
         });
       }
     }
-  }, [activeDownload, open]);
+  }, [activeDownload, open, initialUrl]);
 
   // Lấy thư mục lưu trữ mặc định và tùy chọn đã lưu
   useEffect(() => {
@@ -151,6 +179,12 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({
   useEffect(() => {
     if (open && initialUrl) {
       setUrlInput(initialUrl);
+      setMediaInfo(null);
+      setCustomTitle('');
+      setError(null);
+      if (!activeDownload?.isDownloading) {
+        backgroundDownloadManager.dismiss();
+      }
     }
   }, [open, initialUrl]);
 
@@ -164,6 +198,24 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({
       setIsInspecting(false);
     }
   }, [open, activeDownload?.isDownloading]);
+
+  // Dọn sạch giao diện để người dùng nhập link và tải video tiếp theo
+  const handleResetForNextDownload = () => {
+    setUrlInput('');
+    setMediaInfo(null);
+    setCustomTitle('');
+    setError(null);
+    setIsInspecting(false);
+    backgroundDownloadManager.dismiss();
+  };
+
+  // Mở tác vụ vừa tải thành công và bắt đầu làm việc
+  const handleOpenCreatedTask = () => {
+    if (activeDownload?.completedTask) {
+      onSuccess?.(activeDownload.completedTask);
+    }
+    onOpenChange(false);
+  };
 
   // Chọn thư mục lưu trữ mới qua hộp thoại hệ thống
   const handleChooseDirectory = async () => {
@@ -211,6 +263,11 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({
       return;
     }
 
+    // Nếu lượt tải trước đó đã hoàn tất, dọn dẹp để bắt đầu lượt tải mới
+    if (!activeDownload?.isDownloading && activeDownload?.progress?.status === 'completed') {
+      backgroundDownloadManager.dismiss();
+    }
+
     setIsInspecting(true);
     setError(null);
     setMediaInfo(null);
@@ -241,6 +298,10 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({
   const handleDownload = async () => {
     const targetUrl = mediaInfo?.cleanUrl || urlInput.trim();
     if (!targetUrl || !mediaInfo) return;
+
+    if (!activeDownload?.isDownloading && activeDownload?.progress?.status === 'completed') {
+      backgroundDownloadManager.dismiss();
+    }
 
     setError(null);
     try {
@@ -378,7 +439,14 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({
               <input
                 type="text"
                 value={urlInput}
-                onChange={(e) => setUrlInput(e.target.value)}
+                onChange={(e) => {
+                  setUrlInput(e.target.value);
+                  if (isCurrentCompleted && e.target.value.trim() !== activeDownload?.url) {
+                    setMediaInfo(null);
+                    setCustomTitle('');
+                    backgroundDownloadManager.dismiss();
+                  }
+                }}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !isInspecting && !isDownloading) {
                     handleInspect();
@@ -392,13 +460,10 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({
                 {urlInput && (
                   <button
                     type="button"
-                    onClick={() => {
-                      setUrlInput('');
-                      setMediaInfo(null);
-                      setError(null);
-                    }}
+                    onClick={handleResetForNextDownload}
                     disabled={isInspecting || isDownloading}
                     className="p-1 text-text-muted hover:text-text rounded-md cursor-pointer"
+                    title="Xóa để nhập liên kết mới"
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>
@@ -607,8 +672,50 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({
             </div>
           )}
 
-          {/* Thanh tiến trình tải */}
-          {activeDownload?.inspection && !isDownloading && activeDownload.cleanUrl === mediaInfo?.cleanUrl && <MediaInspectionPanel report={activeDownload.inspection} title="Tải thành công — kết quả kiểm tra" />}
+          {/* Trạng thái hoàn thành tải video (100% & đã thêm vào workspace) */}
+          {isCurrentCompleted && (
+            <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3.5 space-y-2.5 text-text">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <div className="flex h-7 w-7 items-center justify-center rounded-full bg-emerald-500/20 text-emerald-400">
+                    <CheckCircle2 className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-semibold text-emerald-300">
+                      Tải video hoàn tất (100%) & Đã thêm vào khâu làm việc
+                    </h4>
+                    <p className="text-[11px] text-emerald-200/80">
+                      Tác vụ đã sẵn sàng trong ứng dụng. Bạn có thể bấm biên tập ngay hoặc dọn form để tải tiếp video khác.
+                    </p>
+                  </div>
+                </div>
+                <span className="rounded bg-emerald-500/20 px-2 py-0.5 text-[10px] font-medium text-emerald-300 uppercase border border-emerald-500/30">
+                  {activeDownload?.platform || mediaInfo?.platform}
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-emerald-500/20 text-[11px]">
+                <span className="text-text-muted truncate max-w-[340px]">
+                  Tệp: <strong className="text-text font-mono">{activeDownload?.completedTask?.fileName || customTitle || mediaInfo?.title}</strong>
+                </span>
+                <button
+                  type="button"
+                  onClick={handleResetForNextDownload}
+                  className="inline-flex items-center gap-1.5 text-accent hover:text-accent-hover font-medium cursor-pointer transition"
+                  title="Dọn sạch form để chuẩn bị tải video tiếp theo"
+                >
+                  <RotateCcw className="h-3 w-3" />
+                  <span>Dọn form để tải video tiếp theo</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Báo cáo kiểm tra watermark & metadata cho Douyin */}
+          {activeDownload?.inspection && isCurrentCompleted && (
+            <MediaInspectionPanel report={activeDownload.inspection} title="Kết quả kiểm tra watermark & metadata" />
+          )}
+
+          {/* Thanh tiến trình tải khi đang chạy */}
           {isDownloading && progress && (
             <div className="rounded-md border border-border bg-surface-2 p-3 space-y-2">
               <div className="flex items-center justify-between text-xs">
@@ -647,6 +754,12 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({
                   <span className="relative inline-flex rounded-full h-2 w-2 bg-accent"></span>
                 </span>
                 Đang tải chạy nền — bạn có thể thu nhỏ hoặc chuyển tab khác
+              </span>
+            )}
+            {isCurrentCompleted && (
+              <span className="text-[11px] text-emerald-400 flex items-center gap-1.5 font-medium">
+                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+                Đã thêm vào khâu làm việc
               </span>
             )}
           </div>
@@ -688,7 +801,32 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({
               )}
             </button>
 
-            {mediaInfo && !isDownloading && (
+            {/* Trạng thái đã hoàn tất: Các nút chuyển hướng rõ ràng */}
+            {isCurrentCompleted && (
+              <>
+                <button
+                  type="button"
+                  onClick={handleOpenCreatedTask}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-accent/40 bg-accent/10 px-3.5 py-1.5 text-xs font-medium text-accent hover:bg-accent/20 transition cursor-pointer"
+                  title="Chuyển ngay đến tác vụ trong khâu làm việc"
+                >
+                  <Sparkles className="h-3.5 w-3.5" />
+                  <span>Bắt đầu làm việc</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleResetForNextDownload}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-accent px-4 py-1.5 text-xs font-medium text-white hover:bg-accent-hover transition cursor-pointer shadow-sm"
+                  title="Dọn sạch form để dán liên kết video tiếp theo"
+                >
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  <span>Tải video khác</span>
+                </button>
+              </>
+            )}
+
+            {/* Chưa tải: Nút bắt đầu tải */}
+            {mediaInfo && !isDownloading && !isCurrentCompleted && (
               <button
                 type="button"
                 onClick={handleDownload}
