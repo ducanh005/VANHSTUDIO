@@ -700,7 +700,7 @@ export const OverlayMaskEditor: React.FC<OverlayMaskEditorProps> = ({
                 </label>
                 <input
                   type="text"
-                  placeholder="Ví dụ: @vanhsub_official"
+                  placeholder="Ví dụ: @vanhstudio_official"
                   value={watermark.content || ''}
                   onChange={(e) => onChangeWatermark({ content: e.target.value })}
                   className="w-full rounded-md border border-border bg-surface-2 px-3 py-1.5 text-xs text-text placeholder-slate-500 focus:border-accent/40 focus:outline-none"

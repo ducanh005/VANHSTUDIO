@@ -8,7 +8,7 @@ export default function MyApp({ Component, pageProps }: AppProps) {
       <Head>
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <meta name="color-scheme" content="dark" />
-        <title>VANHSUB</title>
+        <title>VanhStudio</title>
       </Head>
       <div className="min-h-screen bg-bg text-text font-sans antialiased">
         <Component {...pageProps} />

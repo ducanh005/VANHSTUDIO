@@ -468,7 +468,7 @@ export default function HomePage() {
   return (
     <>
       <Head>
-        <title>VANHSUB — Studio Phụ Đề & Lồng Tiếng AI</title>
+        <title>VanhStudio — Studio Phụ Đề & Lồng Tiếng AI</title>
       </Head>
 
       <div className="flex h-screen overflow-hidden bg-bg text-text antialiased select-none">
@@ -494,7 +494,7 @@ export default function HomePage() {
                 {!isSidebarCollapsed && (
                   <div className="min-w-0">
                     <div className="text-sm font-semibold tracking-tight text-text flex items-center gap-1.5 truncate">
-                      VANHSUB
+                      VanhStudio
                       <span className="rounded bg-accent-tint px-1.5 py-0.5 text-[9px] font-medium text-accent">
                         AI PRO
                       </span>
@@ -842,7 +842,7 @@ export default function HomePage() {
                 <div>
                   <div className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface-2 px-2.5 py-1 text-[11px] font-medium text-text-muted">
                     <Sparkles className="h-3 w-3 text-accent" />
-                    <span>VANHSUB Studio 2026</span>
+                    <span>VanhStudio 2026</span>
                   </div>
                   <h1 className="mt-2 text-xl font-semibold tracking-tight text-text">
                     {greeting}, bắt đầu dự án mới nào!

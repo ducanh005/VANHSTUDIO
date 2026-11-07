@@ -1,9 +1,9 @@
 {
   "private": true,
-  "name": "vanhsub",
-  "description": "Ứng dụng phụ đề và lồng tiếng tiếng Việt trên desktop",
+  "name": "vanhstudio",
+  "description": "VanhStudio — Ứng dụng phụ đề, lồng tiếng và sản xuất video AI trên desktop",
   "version": "1.0.0",
-  "author": "VANHSUB",
+  "author": "VanhStudio",
   "main": "app/main.js",
   "scripts": {
     "dev": "nextron",

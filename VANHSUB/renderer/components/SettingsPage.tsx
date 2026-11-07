@@ -458,7 +458,7 @@ export default function SettingsPage() {
     setTiktokBusy('preview');
     try {
       const res = await window.vanhsub.tiktokTts.synthesize(
-        'Xin chào! Đây là giọng đọc thử nghiệm từ TikTok trong VANHSUB.',
+        'Xin chào! Đây là giọng đọc thử nghiệm từ TikTok trong VanhStudio.',
         'BV074_streaming',
       );
       if (res.ok) {

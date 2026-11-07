@@ -32,7 +32,7 @@ interface GuideStep {
 const STEPS: GuideStep[] = [
   {
     icon: Sparkles,
-    title: 'Chào mừng đến với VANHSUB!',
+    title: 'Chào mừng đến với VanhStudio!',
     description:
       'Studio phụ đề & lồng tiếng AI chạy trực tiếp trên máy của bạn — biến video nước ngoài thành phụ đề tiếng Việt và giọng lồng tiếng tự nhiên.',
     bullets: [
@@ -172,7 +172,7 @@ export default function OnboardingModal({ open, onClose }: Props) {
               </div>
               <div>
                 <Dialog.Title className="text-sm font-semibold text-text">
-                  Hướng dẫn VANHSUB
+                  Hướng dẫn VanhStudio
                 </Dialog.Title>
                 <Dialog.Description className="text-[11px] text-text-muted">
                   Quy trình phụ đề &amp; lồng tiếng trong 5 bước — dành cho người dùng mới

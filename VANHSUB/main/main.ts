@@ -1142,7 +1142,7 @@ handleRendererIpc('tts:add-voice-sample-from-url', async (_event, name: string, 
 
 // Nghe thử giọng đọc TTS (1 câu ngắn) — trả base64 mp3 cho renderer phát trực tiếp
 handleRendererIpc('tts:preview', async (_event, text: string, voice?: string, speed?: number, engine?: 'viettts' | 'tiktok') => {
-  const sampleText = (text || '').trim().slice(0, 300) || 'Xin chào! Đây là giọng đọc thử nghiệm của VANHSUB.'
+  const sampleText = (text || '').trim().slice(0, 300) || 'Xin chào! Đây là giọng đọc thử nghiệm của VanhStudio.'
   return previewTts(sampleText, voice, speed, engine)
 })
 

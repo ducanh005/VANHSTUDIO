@@ -1,6 +1,6 @@
-appId: com.vanhsub.app
-productName: VANHSUB
-copyright: Copyright © 2026 VANHSUB
+appId: com.vanhstudio.app
+productName: VanhStudio
+copyright: Copyright © 2026 VanhStudio
 directories:
     output: dist
     buildResources: resources

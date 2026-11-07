@@ -2,7 +2,7 @@ import vi from '../locales/vi.json';
 
 /**
  * Simple i18n helper function — chỉ dùng tiếng Việt, không cần next-i18next
- * Sử dụng: t('common.appName') trả về 'VANHSUB'
+ * Sử dụng: t('common.appName') trả về 'VanhStudio'
  * 
  * Hỗ trợ dot notation để truy cập nested objects:
  * t('home.greeting_morning') -> "Chào buổi sáng"
