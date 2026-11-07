@@ -1,4 +1,5 @@
 import type { AiStudioStageId, PipelineSessionState, ScriptBeatLine } from './types';
+import { assertUsableScript } from '../../shared/aiStudioScript';
 
 /** Invalidate pointers only. Previous production files remain available for recovery. */
 export function invalidateSessionArtifacts(session: PipelineSessionState, from: AiStudioStageId): void {
@@ -29,6 +30,7 @@ const narration = (lines: ScriptBeatLine[]) => JSON.stringify(lines.map(({ id, t
 const content = (lines: ScriptBeatLine[]) => JSON.stringify(lines.map(clearTiming));
 
 export function applyScriptLines(session: PipelineSessionState, incoming: ScriptBeatLine[]): boolean {
+  assertUsableScript(incoming);
   if (!Array.isArray(incoming) || !incoming.length || incoming.some(line =>
     !line || typeof line.id !== 'string' || !line.id.trim() || typeof line.text !== 'string' || !line.text.trim()) ||
     new Set(incoming.map(line => line.id)).size !== incoming.length) {

@@ -1,6 +1,13 @@
 import { applyScriptLines, invalidateSessionArtifacts } from './sessionArtifacts';
+import { assertUsableScript } from '../../shared/aiStudioScript';
+import { listKokoroVoices } from './kokoroVoices';
+import { kokoroUrl } from '../tts-providers/kokoro/KokoroClient';
+import { getStudioLlmReadiness } from './llmReadiness';
+import { piperLocalStatus } from '../tts-providers/piper/PiperLocalClient';
+import {connectFlowReadOnly} from './flowConnection';
 import { guardRendererInvoke } from '../security/rendererTrust';
 import { validateIpcPayload } from '../security/ipcPayload';
+import type { StartManualMediaPayload } from './types';
 /**
  * AI Video Studio - IPC Communication Router
  *
@@ -83,6 +90,8 @@ export interface IAiStudioPipelineEngineDelegate {
 
   getState(payload: GetPipelineStatePayload): Promise<PipelineSessionState | null>;
   getSessionConfig?(sessionId: string): Promise<AiStudioConfig>;
+  getMediaReadiness?(sessionId?:string):Promise<unknown>;
+  saveManualSeo?(input:{sessionId:string;title:string;description:string;hashtags:string[]}):Promise<{session:PipelineSessionState;metadataPath:string}>;
 
   persistSessionStateAtomic?(state: PipelineSessionState): void;
 
@@ -106,6 +115,7 @@ export interface IAiStudioPipelineEngineDelegate {
   importSceneMedia?(
     payload: ImportSceneMediaPayload
   ): Promise<ImportSceneMediaResult>;
+  startManualMedia?(payload: StartManualMediaPayload): Promise<StartPipelineResult>;
 
   renderVideo(payload: RenderVideoPayload): Promise<RenderVideoResult>;
 }
@@ -182,7 +192,26 @@ function safeHandle(
 // IPC Handler Registration Entry Point
 // ============================================================================
 
-export function registerAiStudioIpc(): void {
+export function registerAiStudioIpc(resolveExternalFile?: (file: string, extensions: Set<string>) => string): void {
+  safeHandle('aiStudio:flow:connectReadOnly',async()=>connectFlowReadOnly());
+  safeHandle('aiStudio:media:readiness',async(_event,payload)=>{
+    if(!pipelineEngineDelegate?.getMediaReadiness)throw new Error('Media readiness chưa sẵn sàng.');
+    return pipelineEngineDelegate.getMediaReadiness(payload?.sessionId);
+  });
+  safeHandle('aiStudio:manualSeo:save', async (_event,input) => {
+    if (!pipelineEngineDelegate?.saveManualSeo) throw new Error('Lưu SEO thủ công chưa sẵn sàng.');
+    return pipelineEngineDelegate.saveManualSeo(input);
+  });
+  safeHandle('aiStudio:voices:piperStatus', async () => piperLocalStatus());
+  safeHandle('aiStudio:readiness', async () => getStudioLlmReadiness(getDecryptedAiStudioConfig()));
+  safeHandle('aiStudio:voices:kokoro', async () => listKokoroVoices(kokoroUrl(getDecryptedAiStudioConfig().voice.kokoroBaseUrl, 'voices')));
+  safeHandle('aiStudio:pipeline:startManualMedia', async (_event, payload: StartManualMediaPayload) => {
+    if (!resolveExternalFile || !pipelineEngineDelegate?.startManualMedia) throw new Error('Manual media import chưa sẵn sàng.');
+    return pipelineEngineDelegate.startManualMedia({ ...payload,
+      srtPath: resolveExternalFile(payload.srtPath, new Set(['.srt'])),
+      audioPath: resolveExternalFile(payload.audioPath, new Set(['.mp3', '.wav', '.m4a', '.flac', '.aac', '.ogg'])),
+    });
+  });
   // Automatically wire Milestone 2 Pipeline Engine delegate if not yet registered
   if (!pipelineEngineDelegate) {
     const engine = new AiStudioPipelineEngine();
@@ -395,15 +424,9 @@ export function registerAiStudioIpc(): void {
     ): Promise<GenerateMasterPromptResult> => {
       try {
         const config = getDecryptedAiStudioConfig();
-        const effectiveLlmConfig = {
-          ...config.llm,
-          ...(payload.channelProfile?.aiProvider && payload.channelProfile.aiProvider !== 'default'
-            ? { provider: payload.channelProfile.aiProvider }
-            : {}),
-        };
         const masterPrompt = await aiStudioLlmService.generateMasterPromptForChannel(
           payload.channelProfile,
-          effectiveLlmConfig
+          config.llm
         );
         return {
           masterPrompt,
@@ -432,11 +455,13 @@ export function registerAiStudioIpc(): void {
             ? await pipelineEngineDelegate.getState({ sessionId: payload.sessionId }) : undefined;
           signal?.throwIfAborted();
           if (payload.sessionId && !session) throw new Error('Session không tồn tại.');
+          const lines = session ? session.artifacts.scriptLines || [] : payload.lines || [];
+          assertUsableScript(lines);
           const config = payload.sessionId && pipelineEngineDelegate?.getSessionConfig
             ? await pipelineEngineDelegate.getSessionConfig(payload.sessionId)
             : getDecryptedAiStudioConfig();
           const evaluation = await aiStudioLlmService.evaluateScript(
-            session?.artifacts.scriptLines || payload.lines || [],
+            lines,
             session?.artifacts.blueprint || payload.blueprint,
             payload.sessionId ? config.channelProfile : (payload.channelProfile || config.channelProfile),
             config.llm
@@ -474,11 +499,13 @@ export function registerAiStudioIpc(): void {
             ? await pipelineEngineDelegate.getState({ sessionId: payload.sessionId }) : undefined;
           signal?.throwIfAborted();
           if (payload.sessionId && !session) throw new Error('Session không tồn tại.');
+          const lines = session ? session.artifacts.scriptLines || [] : payload.lines || [];
+          assertUsableScript(lines);
           const config = payload.sessionId && pipelineEngineDelegate?.getSessionConfig
             ? await pipelineEngineDelegate.getSessionConfig(payload.sessionId)
             : getDecryptedAiStudioConfig();
           const refined: RefineScriptResult = await aiStudioLlmService.refineScript(
-            session?.artifacts.scriptLines || payload.lines || [],
+            lines,
             payload.instructions,
             payload.mode || 'improve_weaknesses',
             session?.artifacts.blueprint || payload.blueprint,

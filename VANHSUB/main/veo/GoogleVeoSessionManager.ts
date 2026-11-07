@@ -21,11 +21,6 @@ import type {
   VeoStatusPayload,
 } from './types';
 
-const CHROME_DESKTOP_UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
-
-const GOOGLE_AUTH_UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0';
 
 const GOOGLE_FLOW_LOBBY_URL = 'https://flow.google.com';
 const VIDEO_FX_FALLBACK_URL = 'https://labs.google/fx/tools/video-fx';
@@ -328,48 +323,7 @@ export class GoogleVeoSessionManager {
 
     const ses = session.fromPartition('persist:google_veo');
 
-    // Thiết lập User-Agent mặc định cho partition
-    try {
-      ses.setUserAgent(CHROME_DESKTOP_UA);
-    } catch {}
-
-    // Can thiệp request headers để loại bỏ mọi dấu vết sec-ch-ua/Electron gây chặn "Ứng dụng không an toàn / không tin cậy"
-    try {
-      ses.webRequest.onBeforeSendHeaders(
-        {
-          urls: [
-            '*://*.google.com/*',
-            '*://google.com/*',
-            '*://labs.google/*',
-            '*://*.labs.google/*',
-            '*://flow.google.com/*',
-            '*://*.flow.google.com/*',
-          ],
-        },
-        (details: any, callback: any) => {
-          const isAuth = details.url && details.url.includes('accounts.google.com');
-          if (isAuth) {
-            // Khi vào trang đăng nhập Google, chuyển sang User-Agent Firefox sạch không có sec-ch-ua client hints
-            details.requestHeaders['User-Agent'] = GOOGLE_AUTH_UA;
-            delete details.requestHeaders['sec-ch-ua'];
-            delete details.requestHeaders['sec-ch-ua-mobile'];
-            delete details.requestHeaders['sec-ch-ua-platform'];
-            delete details.requestHeaders['sec-ch-ua-full-version-list'];
-            delete details.requestHeaders['sec-ch-ua-arch'];
-            delete details.requestHeaders['sec-ch-ua-bitness'];
-            delete details.requestHeaders['sec-ch-ua-model'];
-          } else {
-            details.requestHeaders['User-Agent'] = CHROME_DESKTOP_UA;
-            details.requestHeaders['sec-ch-ua'] = '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"';
-            details.requestHeaders['sec-ch-ua-mobile'] = '?0';
-            details.requestHeaders['sec-ch-ua-platform'] = '"Windows"';
-          }
-          callback({ requestHeaders: details.requestHeaders });
-        }
-      );
-    } catch (headerErr) {
-      console.warn('Lỗi khi thiết lập onBeforeSendHeaders cho Google Veo:', headerErr);
-    }
+    // Preserve Chromium identity/client hints; do not mask the embedded browser.
 
     const initWidth = 1440;
     const initHeight = 900;
@@ -406,22 +360,13 @@ export class GoogleVeoSessionManager {
     }
 
     // Thiết lập User-Agent cho webContents
-    this.lobbyWindow.webContents.setUserAgent(CHROME_DESKTOP_UA);
+    // No user-agent override.
 
     // Gắn Crash Watchdog (AC-7)
     this.attachCrashWatchdog(this.lobbyWindow);
 
     // Xóa cờ automation webdriver và chèn CSS khắc phục đè chồng giao diện
     this.lobbyWindow.webContents.on('dom-ready', () => {
-      this.lobbyWindow?.webContents?.executeJavaScript(`
-        try {
-          delete Object.getPrototypeOf(navigator).webdriver;
-          if (navigator.webdriver) {
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-          }
-        } catch (e) {}
-      `).catch(() => {});
-
       // Khắc phục lỗi đè chồng tiêu đề dự án và menu Tất cả nội dung nghe nhìn ở góc trên bên trái
       this.lobbyWindow?.webContents?.insertCSS(`
         flow-navigation-header {
@@ -447,11 +392,6 @@ export class GoogleVeoSessionManager {
 
     // Lắng nghe điều hướng URL: đổi User-Agent linh hoạt giữa trang Auth và trang Labs/Flow
     this.lobbyWindow.webContents.on('did-navigate', async (_event: any, url: string) => {
-      if (url.includes('accounts.google.com')) {
-        this.lobbyWindow?.webContents?.setUserAgent(GOOGLE_AUTH_UA);
-      } else {
-        this.lobbyWindow?.webContents?.setUserAgent(CHROME_DESKTOP_UA);
-      }
 
       if (
         url.includes('flow.google.com') ||
@@ -843,8 +783,7 @@ export class GoogleVeoSessionManager {
 
     const probePromise = new Promise<VeoSessionValidationResult>((resolve) => {
       const headers: Record<string, string> = {
-        'User-Agent': CHROME_DESKTOP_UA,
-        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'vi,en-US;q=0.9,en;q=0.8',
         Connection: 'close',
       };

@@ -1179,6 +1179,9 @@ export default function SettingsPage() {
                     <option value="vi-VN-HoaiMyNeural">Hoài My (Nữ - Truyền cảm, Tự nhiên)</option>
                     <option value="vi-VN-NamMinhNeural">Nam Minh (Nam - Trầm ấm, Phóng sự)</option>
                   </optgroup>
+                  <optgroup label="Local TTS (cần server đang chạy)">
+                    <option value="vi_VN-vais1000-medium">Piper tiếng Việt — CPU local</option>
+                  </optgroup>
                   <optgroup label="TikTok TTS">
                     <option value="BV074_streaming">BV074 — Nữ Triển vọng (Tiếng Việt)</option>
                     <option value="BV075_streaming">BV075 — Nam Trầm ấm (Tiếng Việt)</option>

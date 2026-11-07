@@ -107,9 +107,10 @@ function connectWebSocket() {
     };
 
     ws.onmessage = async (event) => {
+      let msg;
       try {
         if (ws !== socket) return;
-        const msg = JSON.parse(event.data);
+        msg = JSON.parse(event.data);
         if (msg.type === 'AUTH_CHALLENGE') {
           if (bridgeAuthenticated || authContext || msg.protocol !== 2 || msg.port !== port || !/^[A-Za-z0-9_-]{43}$/.test(msg.nonce || '')) { socket.close(); return; }
           authContext = { value: `chrome-extension://${chrome.runtime.id}|${port}|${msg.nonce}` };
@@ -141,6 +142,12 @@ function connectWebSocket() {
         await handleMessage(msg);
       } catch (err) {
         error('Lỗi phân tích cú pháp message từ WebSocket:', err);
+        // A rejected request must finish on its originating authenticated socket.
+        // Otherwise project/navigation errors become a misleading server timeout.
+        if (ws === socket && bridgeAuthenticated && socket.readyState === WebSocket.OPEN && typeof msg?.id === 'string') {
+          const reason = typeof err?.message === 'string' ? err.message.slice(0, 500) : 'EXTENSION_REQUEST_FAILED';
+          socket.send(JSON.stringify({ id: msg.id, error: reason }));
+        }
       }
     };
 

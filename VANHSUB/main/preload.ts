@@ -202,6 +202,12 @@ const vanhsub = {
     deleteScene: (id: string) => ipcRenderer.invoke('bible:deleteScene', id),
   },
   aiStudio: {
+    saveManualSeo: (input: any) => ipcRenderer.invoke('aiStudio:manualSeo:save', input),
+    getPiperStatus: () => ipcRenderer.invoke('aiStudio:voices:piperStatus'),
+    connectFlowReadOnly: () => ipcRenderer.invoke('aiStudio:flow:connectReadOnly'),
+    getReadiness: () => ipcRenderer.invoke('aiStudio:readiness'),
+    getMediaReadiness: (payload?:{sessionId?:string}) => ipcRenderer.invoke('aiStudio:media:readiness',payload),
+    getKokoroVoices: () => ipcRenderer.invoke('aiStudio:voices:kokoro'),
     // Configuration (Milestone 1)
     getConfig: () => ipcRenderer.invoke('aiStudio:config:get'),
     updateConfig: (updates: any) => ipcRenderer.invoke('aiStudio:config:set', updates),
@@ -213,6 +219,7 @@ const vanhsub = {
     reset: () => ipcRenderer.invoke('aiStudio:config:reset'),
 
     // Pipeline Execution (Milestone 2)
+    startManualMedia: (payload: { projectId: string; srtPath: string; audioPath: string }) => ipcRenderer.invoke('aiStudio:pipeline:startManualMedia', payload),
     startPipeline: (payload: { topic: string; options?: any }) =>
       ipcRenderer.invoke('aiStudio:pipeline:start', payload),
     resumePipeline: (payload: {
@@ -313,7 +320,7 @@ contextBridge.exposeInMainWorld('vanhsub', vanhsub)
 contextBridge.exposeInMainWorld('ipc', handler)
 
 // ── [DEBUG] Tạm thời — xóa sau khi Giai đoạn 1 xác nhận ──────────────────
-contextBridge.exposeInMainWorld('debug', {
+if (process.env.NODE_ENV !== 'production') contextBridge.exposeInMainWorld('debug', {
   testRpcPhase1: (projectId: string) =>
     ipcRenderer.invoke('debug:test-rpc-phase1', projectId),
   testUploadImage: (filePath: string, projectId: string) =>

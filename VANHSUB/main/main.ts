@@ -352,7 +352,7 @@ registerWorkflowIpc()
 // =========================================================================
 // AI VIDEO STUDIO IPC HANDLERS
 // =========================================================================
-registerAiStudioIpc()
+registerAiStudioIpc((file, extensions) => resolveGrantedMedia(file, getMediaGrants(), extensions))
 setAiStudioPipelineEngine(new AiStudioPipelineEngine())
 
 handleRendererIpc('bridge:create-pairing-code', async () => {
@@ -661,6 +661,7 @@ function cancelTaskExecution(id: string): boolean {
   const ttsCancelled = TTSRunner.cancel(id)
   const exportCancelled = ExportRunner.cancel(id)
   const dubbingCancelled = DubbingRunner.cancel(id)
+  const stemsCancelled = StemExportRunner.cancel(id)
 
   // 3. Cập nhật trạng thái Store nếu task đang trong quá trình chạy
   const currentTask = TaskStore.getById(id)
@@ -671,7 +672,7 @@ function cancelTaskExecution(id: string): boolean {
     })
   }
 
-  return qIdx !== -1 || activeOperation || asrCancelled || ocrCancelled || hybridCancelled || translateCancelled || ttsCancelled || exportCancelled || dubbingCancelled
+  return qIdx !== -1 || activeOperation || asrCancelled || ocrCancelled || hybridCancelled || translateCancelled || ttsCancelled || exportCancelled || dubbingCancelled || stemsCancelled
 }
 
 handleRendererIpc('tasks:delete', async (_event, id: string) => {
@@ -1368,11 +1369,12 @@ handleRendererIpc('dialog:openImageFile', async () => {
 handleRendererIpc('dialog:openAudioFile', async () => {
   if (!mainWindow) return null
   const result = await dialog.showOpenDialog(mainWindow, {
-    title: 'Chọn nhạc nền',
+    title: 'Chọn file âm thanh (giọng đọc hoặc nhạc nền)',
     properties: ['openFile'],
     filters: [{ name: 'Âm thanh', extensions: ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac'] }],
   })
-  return result.canceled ? null : (result.filePaths[0] || null)
+  if (result.canceled || result.filePaths.length === 0) return null
+  return rememberSelection(result.filePaths)[0]
 })
 
 // Chọn 1 file video (dùng cho node Tải Video / Workflow)

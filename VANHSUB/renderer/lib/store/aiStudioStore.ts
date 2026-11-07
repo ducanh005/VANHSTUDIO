@@ -62,6 +62,9 @@ export function mergeAiStudioConfig(
   return {
     llm: {
       ...base.llm,
+      ...(patch.llm?.provider && patch.llm.provider !== base.llm.provider
+        ? { apiKey: '', model: '', baseUrl: undefined }
+        : {}),
       ...(patch.llm || {}),
     },
     voice: {

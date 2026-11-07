@@ -12,6 +12,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import type { JobState } from '../../browser-automation/types';
+import { OfficialGeminiVisualProvider } from './OfficialGeminiVisualProvider';
 
 export type VisualProviderType =
   | 'google_flow_rpc'
@@ -26,6 +27,15 @@ export interface VisualGenerationRequest {
   motionPrompt?: string;
   aspectRatio: string;
   durationSeconds?: number;
+  model?: string;
+  task?: 't2i' | 't2v' | 'i2v';
+  resolution?: string;
+  expectedDurationSec?: number;
+  allowTimelineTrim?: boolean;
+  sessionId?: string;
+  referenceHash?: string;
+  receiptDir?: string;
+  requestLimit?: number;
   referenceImage?: string;
   projectId?: string;
   sceneId?: string;
@@ -43,6 +53,10 @@ export interface VisualGenerationResult {
   operationId?: string;
   assetUrl?: string;
   state: JobState;
+  model?: string;
+  sha256?: string;
+  referenceHash?: string;
+  mediaInfo?: { width: number; height: number; durationSec?: number; fps?: number };
 }
 
 export interface JobRecord {
@@ -181,6 +195,16 @@ export class VisualProviderRouter {
   public isOfficialApiConfigured(apiKey?: string): boolean {
     const key = apiKey || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
     return typeof key === 'string' && key.trim().length > 10;
+  }
+
+  /** Paid API is explicit opt-in, never an automatic fallback from a blocked Flow job. */
+  public generateOfficial(req: VisualGenerationRequest): Promise<VisualGenerationResult> {
+    const active = this.inFlightPromises.get(req.idempotencyKey);
+    if (active) return active;
+    // Revalidate durable receipt and content hash, even after an earlier in-memory completion.
+    const pending = new OfficialGeminiVisualProvider().generate(req).finally(() => this.inFlightPromises.delete(req.idempotencyKey));
+    this.inFlightPromises.set(req.idempotencyKey, pending);
+    return pending;
   }
 
   /**

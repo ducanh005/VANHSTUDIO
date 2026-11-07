@@ -1,3 +1,4 @@
+import { runFfmpeg } from '../lib/ffmpegProcess';
 // Tách lời thoại khỏi nhạc nền bằng Demucs (AI source separation — cùng loại
 // công nghệ mà CapCut dùng cho tính năng "tách giọng"). Kết quả: file
 // no_vocals.wav (nhạc nền/SFX không lời) để trộn với audio TTS, thay vì giữ
@@ -10,9 +11,8 @@
 import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import { getFfmpegBinPath } from '../asr/audioExtractor';
 import { killProcessTree } from '../lib/processTree';
-import { CancelledError } from '../lib/cancel';
+import { CancelledError, isCancelledError } from '../lib/cancel';
 import { resolvePythonExecutable } from '../lib/pythonEnv';
 
 export interface DemucsCheck {
@@ -20,11 +20,21 @@ export interface DemucsCheck {
   detail: string;
 }
 
-function runPython(args: string[], timeoutMs: number): Promise<{ code: number; stderr: string }> {
+function runPython(
+  args: string[],
+  timeoutMs: number,
+  shouldStop?: () => boolean
+): Promise<{ code: number; stderr: string }> {
+  if (shouldStop?.()) return Promise.reject(new CancelledError());
   return new Promise((resolve, reject) => {
     const pythonBin = resolvePythonExecutable();
     const child = spawn(pythonBin, args, { windowsHide: true });
     let stderr = '';
+    const stopTimer = shouldStop
+      ? setInterval(() => {
+          if (shouldStop()) killProcessTree(child);
+        }, 150)
+      : undefined;
     const timer = setTimeout(() => {
       try {
         killProcessTree(child);
@@ -32,24 +42,28 @@ function runPython(args: string[], timeoutMs: number): Promise<{ code: number; s
         // bỏ qua
       }
       reject(new Error('Quá thời gian chạy python.'));
+      if (stopTimer) clearInterval(stopTimer);
     }, timeoutMs);
 
     child.stderr?.on('data', (d) => (stderr += d.toString()));
     child.on('error', (err) => {
       clearTimeout(timer);
+      if (stopTimer) clearInterval(stopTimer);
       reject(err);
     });
     child.on('exit', (code) => {
       clearTimeout(timer);
-      resolve({ code: code ?? -1, stderr });
+      if (stopTimer) clearInterval(stopTimer);
+      if (shouldStop?.()) reject(new CancelledError());
+      else resolve({ code: code ?? -1, stderr });
     });
   });
 }
 
 /** Kiểm tra máy đã cài sẵn demucs chưa (import nhanh) */
-export async function checkDemucs(): Promise<DemucsCheck> {
+export async function checkDemucs(shouldStop?: () => boolean): Promise<DemucsCheck> {
   try {
-    const { code, stderr } = await runPython(['-c', 'import demucs'], 60_000);
+    const { code, stderr } = await runPython(['-c', 'import demucs'], 60_000, shouldStop);
     if (code === 0) {
       return { ok: true, detail: 'Demucs đã sẵn sàng.' };
     }
@@ -59,7 +73,8 @@ export async function checkDemucs(): Promise<DemucsCheck> {
         'Chưa cài gói demucs. Chạy: python -m pip install demucs (lần đầu tải PyTorch ~2GB).' +
         (stderr.trim() ? ` (${stderr.trim().split('\n').slice(-1)[0]})` : ''),
     };
-  } catch {
+  } catch (error) {
+    if (isCancelledError(error)) throw error;
     return {
       ok: false,
       detail: 'Không chạy được python — cài Python 3 rồi chạy: python -m pip install demucs',
@@ -80,53 +95,31 @@ export interface StemPaths {
  */
 export async function separateVocalsFastFfmpeg(
   inputAudioPath: string,
-  outDir: string
+  outDir: string,
+  shouldStop?: () => boolean
 ): Promise<StemPaths> {
   fs.mkdirSync(outDir, { recursive: true });
   const noVocals = path.join(outDir, 'no_vocals.wav');
   const vocals = path.join(outDir, 'vocals.wav');
 
-  const ffmpegPath = getFfmpegBinPath();
-  console.log(`[VocalSeparation] ⚡ Sử dụng bộ lọc FFmpeg DSP triệt tiêu giọng nói kênh Center...`);
+  await runFfmpeg(
+    [
+      '-y',
+      '-i',
+      inputAudioPath,
+      '-filter_complex',
+      '[0:a]aformat=channel_layouts=stereo,asplit=2[bg][voice];[bg]pan=stereo|c0=c0-c1|c1=c1-c0,volume=1.25[aout];[voice]pan=mono|c0=0.5*c0+0.5*c1,bandpass=f=1200:width_type=h:w=2000[vout]',
+      '-map',
+      '[aout]',
+      noVocals,
+      '-map',
+      '[vout]',
+      vocals,
+    ],
+    { shouldStop }
+  );
 
-  // 1. Tạo noVocals: triệt tiêu kênh Center (L - R) để giữ nhạc nền stereo
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn(
-      ffmpegPath,
-      [
-        '-y',
-        '-i', inputAudioPath,
-        '-filter_complex', '[0:a]pan=stereo|c0=c0-c1|c1=c1-c0,volume=1.25[aout]',
-        '-map', '[aout]',
-        noVocals,
-      ],
-      { windowsHide: true }
-    );
-    child.on('exit', (code) => {
-      if (code === 0 && fs.existsSync(noVocals)) resolve();
-      else reject(new Error(`FFmpeg vocal cancellation thất bại với mã ${code}`));
-    });
-    child.on('error', reject);
-  });
-
-  // 2. Tạo vocals: trích dải tần thoại 200Hz - 3500Hz ở kênh giữa (L + R)
-  await new Promise<void>((resolve) => {
-    const child = spawn(
-      ffmpegPath,
-      [
-        '-y',
-        '-i', inputAudioPath,
-        '-filter_complex', '[0:a]pan=mono|c0=0.5*c0+0.5*c1,bandpass=f=1200:width_type=h:w=2000[aout]',
-        '-map', '[aout]',
-        vocals,
-      ],
-      { windowsHide: true }
-    );
-    child.on('exit', () => resolve());
-    child.on('error', () => resolve());
-  });
-
-  return { noVocals, vocals: fs.existsSync(vocals) ? vocals : noVocals };
+  return { noVocals, vocals };
 }
 
 /**
@@ -137,26 +130,25 @@ export async function separateVocals(
   inputAudioPath: string,
   outDir: string,
   shouldStop?: () => boolean,
+  onBackend?: (backend: 'demucs' | 'dsp') => void
 ): Promise<StemPaths> {
   fs.mkdirSync(outDir, { recursive: true });
   const modelName = 'htdemucs';
 
   // Kiểm tra Demucs trước khi spawn
-  const demucsCheck = await checkDemucs();
+  if (shouldStop?.()) throw new CancelledError();
+  const demucsCheck = await checkDemucs(shouldStop);
+  if (shouldStop?.()) throw new CancelledError();
   if (!demucsCheck.ok) {
+    onBackend?.('dsp');
     console.warn(`[VocalSeparation] ${demucsCheck.detail} -> Chuyển sang FFmpeg DSP Vocal Cancellation tự động.`);
-    return separateVocalsFastFfmpeg(inputAudioPath, outDir);
+    return separateVocalsFastFfmpeg(inputAudioPath, outDir, shouldStop);
   }
 
+  onBackend?.('demucs');
   return new Promise((resolve, reject) => {
     console.log(`[Demucs] Bắt đầu tách lời thoại bằng AI: ${path.basename(inputAudioPath)}`);
-    const args = [
-      '-m', 'demucs',
-      '--two-stems=vocals',
-      '-n', modelName,
-      '-o', outDir,
-      inputAudioPath,
-    ];
+    const args = ['-m', 'demucs', '--two-stems=vocals', '-n', modelName, '-o', outDir, inputAudioPath];
     const pythonBin = resolvePythonExecutable();
     const child = spawn(pythonBin, args, { windowsHide: true });
     let stderrTail = '';
@@ -188,7 +180,7 @@ export async function separateVocals(
       }
       console.warn(`[Demucs] Không chạy được python/demucs (${err.message}). Fallback về FFmpeg DSP.`);
       try {
-        const fallback = await separateVocalsFastFfmpeg(inputAudioPath, outDir);
+        const fallback = await separateVocalsFastFfmpeg(inputAudioPath, outDir, shouldStop);
         resolve(fallback);
       } catch (fallbackErr) {
         reject(fallbackErr);
@@ -205,10 +197,10 @@ export async function separateVocals(
         const tail = stderrTail.trim().split('\n').slice(-3).join(' | ');
         console.warn(`[Demucs] Thoát với mã ${code} (${tail}). Fallback về FFmpeg DSP.`);
         try {
-          const fallback = await separateVocalsFastFfmpeg(inputAudioPath, outDir);
+          const fallback = await separateVocalsFastFfmpeg(inputAudioPath, outDir, shouldStop);
           resolve(fallback);
         } catch (fallbackErr) {
-          reject(new Error(`Demucs lỗi và FFmpeg fallback cũng thất bại: ${fallbackErr}`));
+          reject(isCancelledError(fallbackErr) ? fallbackErr : new Error(`Demucs lỗi và FFmpeg fallback cũng thất bại: ${fallbackErr}`));
         }
         return;
       }
@@ -219,7 +211,7 @@ export async function separateVocals(
       if (!fs.existsSync(noVocals)) {
         console.warn(`[Demucs] Không thấy no_vocals.wav tại ${stemDir}. Fallback về FFmpeg DSP.`);
         try {
-          const fallback = await separateVocalsFastFfmpeg(inputAudioPath, outDir);
+          const fallback = await separateVocalsFastFfmpeg(inputAudioPath, outDir, shouldStop);
           resolve(fallback);
         } catch (fallbackErr) {
           reject(fallbackErr);

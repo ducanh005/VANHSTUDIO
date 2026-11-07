@@ -1857,14 +1857,9 @@ export class GoogleFlowRpcClient {
       // Kiểm tra Extension Bridge nếu đang active trên Chrome
       const bridge = FlowBridgeServer.getInstance();
       if (bridge.isConnected()) {
-        let finalProjectId = projectId?.trim() || '';
+        const finalProjectId = projectId?.trim() || '';
         if (!finalProjectId || finalProjectId === PROJECT_ID_SLOT) {
-          try {
-            const tabInfo = await bridge.getFlowTabInfo(3000);
-            if (tabInfo && tabInfo.projectId) {
-              finalProjectId = tabInfo.projectId;
-            }
-          } catch {}
+          throw new GoogleFlowRpcError('FLOW_PROJECT_REQUIRED: Chưa liên kết project Flow cho tác vụ. Không sử dụng project đang mở.', { code: 'INVALID_ARGUMENT', retryable: false });
         }
         const cleanProjectId = finalProjectId && finalProjectId !== PROJECT_ID_SLOT ? finalProjectId : undefined;
         const payloadProjectId = cleanProjectId || PROJECT_ID_SLOT;
@@ -2141,14 +2136,9 @@ export class GoogleFlowRpcClient {
       // Kiểm tra Extension Bridge nếu đang active trên Chrome
       const bridge = FlowBridgeServer.getInstance();
       if (bridge.isConnected()) {
-        let resolvedProjectId = (projectId && projectId !== PROJECT_ID_SLOT) ? projectId.trim() : '';
+        const resolvedProjectId = (projectId && projectId !== PROJECT_ID_SLOT) ? projectId.trim() : '';
         if (!resolvedProjectId) {
-          try {
-            const tabInfo = await bridge.getFlowTabInfo(3000);
-            if (tabInfo && tabInfo.projectId && tabInfo.projectId !== PROJECT_ID_SLOT) {
-              resolvedProjectId = tabInfo.projectId;
-            }
-          } catch {}
+          throw new GoogleFlowRpcError('FLOW_PROJECT_REQUIRED: Chưa liên kết project Flow cho tác vụ. Không sử dụng project đang mở.', { code: 'INVALID_ARGUMENT', retryable: false });
         }
         const payloadProjectId = resolvedProjectId || PROJECT_ID_SLOT;
         const bridgeProjectId = resolvedProjectId || undefined;
@@ -2473,14 +2463,9 @@ export class GoogleFlowRpcClient {
 
       try {
         const bridge = FlowBridgeServer.getInstance();
-        let resolvedPollProjectId = (projectId && projectId !== PROJECT_ID_SLOT) ? projectId.trim() : '';
+        const resolvedPollProjectId = (projectId && projectId !== PROJECT_ID_SLOT) ? projectId.trim() : '';
         if (bridge.isConnected() && !resolvedPollProjectId) {
-          try {
-            const tabInfo = await bridge.getFlowTabInfo(3000);
-            if (tabInfo && tabInfo.projectId && tabInfo.projectId !== PROJECT_ID_SLOT) {
-              resolvedPollProjectId = tabInfo.projectId;
-            }
-          } catch {}
+          throw new GoogleFlowRpcError('FLOW_PROJECT_REQUIRED: Không xác định được project của tác vụ cần theo dõi.', { code: 'INVALID_ARGUMENT', retryable: false });
         }
         const payloadPollProjectId = resolvedPollProjectId || projectId || PROJECT_ID_SLOT;
         const bridgePollProjectId = resolvedPollProjectId || undefined;

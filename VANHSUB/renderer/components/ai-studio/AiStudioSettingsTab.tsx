@@ -1,4 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { studioLlmReadiness } from '../../../shared/studioLlmReadiness';
+import PiperRuntimeStatus from './PiperRuntimeStatus';
+import MediaRouteSettings from './MediaRouteSettings';
 import {
   Save,
   RotateCcw,
@@ -31,6 +34,7 @@ export default function AiStudioSettingsTab() {
     useAiStudioStore();
 
   const [form, setFormState] = useState<AiStudioConfig>(config);
+  const llmReadiness = studioLlmReadiness(form.llm);
   const dirtySections = useRef(new Map<StudioConfigSection, number>());
   const editVersion = useRef(0);
   const setForm = (next: AiStudioConfig) => {
@@ -320,6 +324,10 @@ export default function AiStudioSettingsTab() {
             <h3 className="text-sm font-semibold text-white">1. Mô hình Ngôn ngữ (LLM Script)</h3>
           </div>
           <div className="space-y-3.5 text-xs">
+            <div role="status" className="rounded border border-border p-2 text-text-muted">
+              {llmReadiness.ready ? `Cấu hình LLM hợp lệ · ${llmReadiness.model || llmReadiness.provider}` : llmReadiness.reasons.join(' ')}
+              <p>{llmReadiness.warnings.join(' ')}</p>
+            </div>
             <div>
               <label className="mb-1 block font-medium text-text">Nhà cung cấp (Provider)</label>
               <select
@@ -327,7 +335,7 @@ export default function AiStudioSettingsTab() {
                 onChange={(e) =>
                   setForm({
                     ...form,
-                    llm: { ...form.llm, provider: e.target.value as LlmProviderType },
+                    llm: { ...form.llm, provider: e.target.value as LlmProviderType, apiKey: '', model: '', baseUrl: undefined },
                   })
                 }
                 className="w-full rounded-md border border-border bg-bg px-3 py-2 text-text focus:border-accent/40 focus:outline-none"
@@ -338,6 +346,14 @@ export default function AiStudioSettingsTab() {
                 <option value="openai">OpenAI (GPT-4o / GPT-4o-mini)</option>
                 <option value="custom">Custom Endpoint (OpenAI-compatible)</option>
               </select>
+              <p className="mt-1 text-[10px] text-text-muted">
+                Đổi nhà cung cấp sẽ xóa key, model và endpoint trong bản nháp. Nhập cấu hình phù hợp trước khi lưu.
+              </p>
+              {form.llm.provider === 'custom' && <div className="mt-2">
+                <label htmlFor="studio-llm-endpoint">Custom LLM Base URL</label>
+                <input id="studio-llm-endpoint" value={form.llm.baseUrl || ''} placeholder="https://server.example/v1"
+                  onChange={e => setForm({...form,llm:{...form.llm,baseUrl:e.target.value}})} className="mt-1 w-full rounded border border-border bg-bg p-2" />
+              </div>}
             </div>
 
             {form.llm.provider === 'chatgpt_web' ? (
@@ -642,7 +658,7 @@ export default function AiStudioSettingsTab() {
                     voice: {
                       ...form.voice,
                       provider: nextProv,
-                      voiceId: nextProv === 'tiktok_tts' ? 'BV074_streaming' : 'vi-VN-HoaiMyNeural',
+                      voiceId: nextProv === 'piper_local' ? 'vi_VN-vais1000-medium' : nextProv === 'local_onnx' ? 'af_heart' : nextProv === 'tiktok_tts' ? 'BV074_streaming' : 'vi-VN-HoaiMyNeural',
                     },
                   });
                 }}
@@ -650,14 +666,27 @@ export default function AiStudioSettingsTab() {
               >
                 <option value="edge_tts">Microsoft Edge TTS (Việt Nam / Đa ngôn ngữ, miễn phí, ổn định)</option>
                 <option value="tiktok_tts">TikTok TTS (Giọng đọc đặc trưng từ Session TikTok)</option>
+                <option value="local_onnx">Kokoro (server local, không tự cài/chạy)</option>
+                <option value="piper_local">Piper tiếng Việt (model đã cài, CPU, không cần server)</option>
               </select>
             </div>
 
             <div>
               <label className="mb-1 block font-medium text-text">
-                {form.voice.provider === 'tiktok_tts' ? 'Giọng đọc TikTok' : 'Giọng đọc tiếng Việt (Edge TTS)'}
+                {form.voice.provider === 'piper_local' ? 'Giọng đọc Piper tiếng Việt' : form.voice.provider === 'local_onnx' ? 'Giọng đọc Kokoro' : form.voice.provider === 'tiktok_tts' ? 'Giọng đọc TikTok' : 'Giọng đọc tiếng Việt (Edge TTS)'}
               </label>
-              {form.voice.provider === 'tiktok_tts' ? (
+              {form.voice.provider === 'piper_local' ? (
+                <div><p>Voice cố định: vi_VN-vais1000-medium. Dùng runtime đã cài riêng; không tải model, không mở server. Tốc độ -50% đến +100%, pitch +0Hz. Timing từng từ là ước lượng.</p><PiperRuntimeStatus/></div>
+              ) : form.voice.provider === 'local_onnx' ? (
+                <div className="space-y-2">
+                  <label htmlFor="studio-kokoro-url">Kokoro Base URL (HTTP loopback)</label>
+                  <input id="studio-kokoro-url" value={form.voice.kokoroBaseUrl || 'http://127.0.0.1:8880/v1'}
+                    onChange={e => setForm({...form,voice:{...form.voice,kokoroBaseUrl:e.target.value}})} className="w-full rounded border border-border bg-bg p-2" />
+                  <label htmlFor="studio-kokoro-voice">Kokoro voice ID</label>
+                  <input id="studio-kokoro-voice" value={form.voice.voiceId} onChange={e => setForm({...form,voice:{...form.voice,voiceId:e.target.value}})} className="w-full rounded border border-border bg-bg p-2" />
+                  <p>Lưu URL trước khi tải catalog trong Cấu hình kênh. Kokoro xuất MP3 mono 24 kHz; không đổi pitch. Chưa nghiệm thu tiếng Việt.</p>
+                </div>
+              ) : form.voice.provider === 'tiktok_tts' ? (
                 <select
                   value={form.voice.voiceId || 'BV074_streaming'}
                   onChange={(e) =>
@@ -792,8 +821,9 @@ export default function AiStudioSettingsTab() {
         <div className="rounded-lg border border-border bg-surface p-5">
           <div className="mb-4 flex items-center gap-2 border-b border-border pb-3">
             <Film className="h-4 w-4 text-accent" />
-            <h3 className="text-sm font-semibold text-white">3. Google Flow Engine (Ảnh/Video)</h3>
+            <h3 className="text-sm font-semibold text-white">3. Media (Ảnh/Video)</h3>
           </div>
+            <MediaRouteSettings value={form.flowEngine} projectId={config.activeProjectId} onChange={flowEngine=>setForm({...form,flowEngine})}/>
           <div className="space-y-3.5 text-xs">
             <div className="grid grid-cols-2 gap-3">
               <div>

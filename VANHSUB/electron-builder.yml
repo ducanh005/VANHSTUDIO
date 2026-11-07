@@ -9,6 +9,10 @@ files:
       filter:
           - package.json
           - app
+    # Never redistribute environment files from the app or third-party runtime dependencies.
+    - '!**/.env'
+    - '!**/.env.*'
+    - '!**/.npmrc'
 # tesseract.js nạp worker-script và wasm từ file thật trên đĩa — không đọc được
 # từ trong asar nên phải giải nén node_modules của nó ra app.asar.unpacked.
 # Tương tự với binary ffmpeg/ffprobe (@ffmpeg-installer, @ffprobe-installer)

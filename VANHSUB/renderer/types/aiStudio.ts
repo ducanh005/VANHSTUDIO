@@ -59,7 +59,7 @@ export interface AiStudioLlmConfig {
 /**
  * 2. TTS & Voice Settings (Giọng đọc & Lồng tiếng)
  */
-export type VoiceProviderType = 'edge_tts' | 'tiktok_tts' | 'local_onnx';
+export type VoiceProviderType = 'edge_tts' | 'tiktok_tts' | 'local_onnx' | 'piper_local';
 
 export const TIKTOK_STUDIO_VOICES = [
   { id: 'BV074_streaming', label: 'Tiếng Việt — Nữ (BV074)', gender: 'female', lang: 'vi' },
@@ -69,6 +69,8 @@ export const TIKTOK_STUDIO_VOICES = [
 ] as const;
 
 export interface AiStudioVoiceConfig {
+  kokoroBaseUrl?: string;
+  kokoroTimeoutMs?: number;
   /** Nhà cung cấp giọng đọc (mặc định 'edge_tts') */
   provider: VoiceProviderType;
   /** Mã định danh giọng đọc (vd: 'vi-VN-HoaiMyNeural', 'vi-VN-NamMinhNeural', 'BV074_streaming', 'BV075_streaming') */
@@ -106,6 +108,28 @@ export interface StoryboardSynthesis {
 }
 
 export interface AiStudioFlowEngineConfig {
+  preferUiGen?: boolean;
+  maxRetries?: number;
+  flowCreditConsent?: boolean;
+  flowCreditProjectId?: string;
+  flowGenerationLimit?: number;
+  flowMaxCredits?: number;
+  flowModelLabel?: string;
+  flowAllowUnknownCost?: boolean;
+  flowVideoMode?: 't2v' | 'i2v';
+  /** Trusted episode context; never accepts a renderer-selected receipt path. */
+  flowReceiptDir?: string;
+
+  apiKey?: string;
+  officialImageModel?: string;
+  officialVideoModel?: string;
+  officialVideoMode?: 't2v' | 'i2v';
+  officialConsent?: boolean;
+  officialConsentProjectId?: string;
+  officialRequestLimit?: number;
+  officialAllowTrim?: boolean;
+  officialCostAcknowledged?: boolean;
+  officialBudgetNote?: string;
   /** Cơ chế sinh media: 'rpc' (Pure Web RPC - mặc định) | 'flow' | 'dom' | 'synthetic' */
   engine?: 'flow' | 'synthetic' | 'rpc' | 'flow_rpc' | 'dom' | string;
   /** Mã dự án trên Google Flow (UUID hoặc target project ID) */
@@ -268,7 +292,7 @@ export interface ChannelProfileConfig {
   /** 13. AI provider (văn bản) */
   aiProvider: 'default' | 'chatgpt_web' | 'gemini_web' | 'deepseek' | 'openai';
   /** 14. Giọng đọc (TTS) */
-  ttsEngine: 'edge_tts' | 'tiktok_tts' | 'kokoro_tts';
+  ttsEngine: 'edge_tts' | 'tiktok_tts' | 'kokoro_tts' | 'piper_local';
   /** 15. Giọng cụ thể */
   specificVoice: string;
   /** 16. Đồng bộ nhân vật */
@@ -382,8 +406,8 @@ export const DEFAULT_CHANNEL_PROFILE_CONFIG: Readonly<ChannelProfileConfig> = Ob
   targetLongDuration: '3_5_min',
   targetShortDuration: '90_120_sec',
   aiProvider: 'default',
-  ttsEngine: 'kokoro_tts',
-  specificVoice: 'vi-VN-HoaiMyNeural',
+  ttsEngine: 'piper_local',
+  specificVoice: 'vi_VN-vais1000-medium',
   characterSync: 'per_video',
   characterRole: '',
   characterImageMode: 'ai_draw',
@@ -400,24 +424,30 @@ export const DEFAULT_CHANNEL_PROFILE_CONFIG: Readonly<ChannelProfileConfig> = Ob
 
 export const DEFAULT_AI_STUDIO_CONFIG: AiStudioConfig = {
   llm: {
-    provider: 'deepseek',
+    provider: 'gemini_web',
+    geminiWebMode: 'visible',
     apiKey: '',
-    model: 'deepseek-chat',
+    model: '',
     baseUrl: '',
     temperature: 0.6,
     systemPromptPreset: 'youtube_story',
   },
   voice: {
-    provider: 'edge_tts',
-    voiceId: 'vi-VN-HoaiMyNeural',
+    provider: 'piper_local',
+    voiceId: 'vi_VN-vais1000-medium',
     rate: '+0%',
     pitch: '+0Hz',
     volume: '+0%',
     autoWordAlignment: true,
   },
   flowEngine: {
-    engine: 'rpc',
-    uiMode: 'offscreen',
+    engine: 'playwright',
+    uiMode: 'live_window',
+    preferUiGen: true,
+    maxRetries: 0,
+    flowVideoMode: 't2v',
+    flowGenerationLimit: 1,
+    flowCreditConsent: false,
     aspectRatio: '16:9',
     outputMode: 'image',
     stylePromptPrefix: 'Cinematic lighting, high resolution, detailed photorealistic, 4k',
@@ -605,6 +635,12 @@ export interface WordTimestamp {
 }
 
 export interface StoryboardScene {
+  officialGenerationNonce?: string;
+  officialTrimAllowed?: boolean;
+  manualMediaOnly?: boolean;
+  mediaProvenance?: { source: 'manual_import'; assetPath: string; sha256: string; importedAt: string; sessionId: string; sceneId: string; projectId?: string; automaticGeneration: false }
+    | { source:'google_flow_ui';assetPath:string;sha256:string;projectId:string;sessionId:string;sceneId:string;requestKey:string;assetId?:string;referenceSha256?:string;automaticGeneration:true;quotedCredits:number|null;actualCredits:null;hardCapVerified:false }
+    | { source:'official_api';provider:'official_gemini_api';model:string;task:'t2i'|'t2v'|'i2v';assetPath:string;sha256:string;sessionId:string;sceneId:string;projectId:string;requestKey:string;requestId?:string;referenceSha256?:string;generatedAt:string;automaticGeneration:true;durationSec?:number;width:number;height:number;fps?:number };
   id: string;
   shotId?: string;
   lineIndex: number;
@@ -613,6 +649,7 @@ export interface StoryboardScene {
   durationMs: number;
   lineText: string;
   visualPrompt: string;
+  motionPrompt?: string;
   negativePrompt?: string;
   motionType: 'ken_burns' | 'video';
   assetPath?: string;
@@ -637,6 +674,7 @@ export interface PipelineSessionArtifacts {
   mediaDir?: string;
   videoPath?: string;
   metadata?: {
+    source?: 'provider' | 'manual_authored';
     title: string;
     description: string;
     hashtags: string[];
@@ -652,6 +690,7 @@ export interface PipelineSessionArtifacts {
 }
 
 export interface PipelineSessionState {
+  manualMode?: boolean;
   productionRevision?: number;
   sessionId: string;
   jobActive?: boolean;
@@ -757,6 +796,11 @@ export type GenerateMasterPromptResult = GenerateMasterPromptResponse;
  * qua preload script.
  */
 export interface VanhsubAiStudioBridge {
+  getKokoroVoices?: () => Promise<Array<{ id: string; name: string }>>;
+  saveManualSeo?: (input:{sessionId:string;title:string;description:string;hashtags:string[]}) => Promise<{session:PipelineSessionState;metadataPath:string}>;
+  getPiperStatus?: () => Promise<{ready:boolean;voice:string;language:string;cpuOnly:boolean;reason?:string}>;
+  connectFlowReadOnly?: () => Promise<{cdpConnected:boolean;profileVerified:boolean;bridgeConnected:boolean;sessionState:string;projectLoaded:boolean;creditBalance:null;creditPrice:null;liveGenerationVerified:false}>;
+  getReadiness?: () => Promise<{ready:boolean;provider:string;model:string;reasons:string[];warnings:string[];liveVerified:boolean}>;
   // Milestone 1 - Quản lý Cấu hình (Core)
   getConfig: () => Promise<AiStudioConfig>;
   updateConfig: (partial: DeepPartial<AiStudioConfig>) => Promise<AiStudioConfig>;

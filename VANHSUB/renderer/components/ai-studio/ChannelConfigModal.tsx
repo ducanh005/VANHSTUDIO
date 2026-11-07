@@ -30,6 +30,9 @@ import {
 } from '../../types/aiStudio';
 import { useAiStudioStore } from '../../lib/store/aiStudioStore';
 import ChannelSkillModal from './ChannelSkillModal';
+import PiperRuntimeStatus from './PiperRuntimeStatus';
+import MediaRouteSettings from './MediaRouteSettings';
+import type {AiStudioFlowEngineConfig} from '../../types/aiStudio';
 
 interface ChannelConfigModalProps {
   isOpen: boolean;
@@ -43,6 +46,8 @@ export default function ChannelConfigModal({
   onSaved,
 }: ChannelConfigModalProps) {
   const { config, updateChannelProfileConfig } = useAiStudioStore();
+  const [mediaFlow,setMediaFlow]=useState<AiStudioFlowEngineConfig>({...config.flowEngine});
+  useEffect(()=>{if(isOpen)setMediaFlow({...config.flowEngine});},[isOpen,config.activeProjectId]);
   const profileVersion = JSON.stringify(config.channelProfile);
 
   // Local state for the modal
@@ -62,6 +67,34 @@ export default function ChannelConfigModal({
   const [newStyleDesc, setNewStyleDesc] = useState('');
 
   const [hasTikTokSession, setHasTikTokSession] = useState<boolean | null>(null);
+  const [kokoroVoices, setKokoroVoices] = useState<Array<{ id: string; name: string }>>([]);
+  const [kokoroStatus, setKokoroStatus] = useState<'idle' | 'loading' | 'success' | 'empty' | 'error'>('idle');
+  const [kokoroError, setKokoroError] = useState('');
+  const [kokoroRetry, setKokoroRetry] = useState(0);
+
+  useEffect(() => {
+    if (!isOpen || profile.ttsEngine !== 'kokoro_tts') return;
+    let active = true;
+    setKokoroStatus('loading'); setKokoroVoices([]); setKokoroError('');
+    const timer = setTimeout(() => {
+      if (active) { active = false; setKokoroStatus('error'); setKokoroError('Hết thời gian tải giọng Kokoro. Hãy thử lại.'); }
+    }, 8000);
+    void (async () => {
+      try {
+        if (!window.vanhsub?.aiStudio?.getKokoroVoices) throw new Error('Bản app này chưa hỗ trợ tải danh sách giọng Kokoro.');
+        const voices = await window.vanhsub.aiStudio.getKokoroVoices();
+        if (!active) return;
+        setKokoroVoices(voices); setKokoroStatus(voices.length ? 'success' : 'empty');
+      } catch (error) {
+        if (active) {
+          setKokoroStatus('error');
+          const message = error instanceof Error ? error.message : 'Không tải được giọng Kokoro.';
+          setKokoroError(message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, ''));
+        }
+      } finally { clearTimeout(timer); }
+    })();
+    return () => { active = false; clearTimeout(timer); };
+  }, [isOpen, profile.ttsEngine, kokoroRetry]);
 
   // Sync state when modal opens or store config changes
   useEffect(() => {
@@ -246,7 +279,9 @@ Output NOTHING else. No analysis, no planning, no alternative titles, no word co
         alert(useAiStudioStore.getState().error || 'Không thể lưu cấu hình kênh. Vui lòng thử lại.');
         return;
       }
-      onSaved?.(profile);
+        const mediaSaved=await useAiStudioStore.getState().updateConfig({flowEngine:mediaFlow});
+        if(!mediaSaved){alert('Không lưu được cấu hình media; hãy thử lưu lại.');return;}
+        onSaved?.(profile);
       onClose();
     } catch (err: any) {
       console.error('[ChannelConfigModal] Error saving config:', err);
@@ -710,6 +745,7 @@ Output NOTHING else. No analysis, no planning, no alternative titles, no word co
               <h3 className="text-sm font-bold text-white tracking-wide">Giọng &amp; Hình</h3>
             </div>
 
+            <MediaRouteSettings value={mediaFlow} projectId={config.activeProjectId} onChange={setMediaFlow}/>
             {/* Row 1: AI provider (văn bản) | Giọng đọc (TTS) | Giọng cụ thể */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div className="space-y-1.5">
@@ -740,9 +776,13 @@ Output NOTHING else. No analysis, no planning, no alternative titles, no word co
                   value={profile.ttsEngine}
                   onChange={(e) => {
                     const nextEngine = e.target.value as any;
-                    if (nextEngine === 'tiktok_tts' && !profile.specificVoice?.startsWith('BV0')) {
+                    if (nextEngine === 'piper_local') {
+                      setProfile(prev => ({...prev,ttsEngine:nextEngine,specificVoice:'vi_VN-vais1000-medium'}));
+                    } else if (nextEngine === 'kokoro_tts' && profile.ttsEngine !== nextEngine) {
+                      setProfile(prev => ({ ...prev, ttsEngine: nextEngine, specificVoice: 'af_heart' }));
+                    } else if (nextEngine === 'tiktok_tts' && !profile.specificVoice?.startsWith('BV0')) {
                       setProfile((prev) => ({ ...prev, ttsEngine: nextEngine, specificVoice: 'BV074_streaming' }));
-                    } else if (nextEngine === 'edge_tts' && profile.specificVoice?.startsWith('BV0')) {
+                    } else if (nextEngine === 'edge_tts' && profile.ttsEngine !== nextEngine) {
                       setProfile((prev) => ({ ...prev, ttsEngine: nextEngine, specificVoice: 'vi-VN-HoaiMyNeural' }));
                     } else {
                       handleChange('ttsEngine', nextEngine);
@@ -753,12 +793,15 @@ Output NOTHING else. No analysis, no planning, no alternative titles, no word co
                   <option value="edge_tts">Edge-TTS (Việt Nam / Đa ngôn ngữ, miễn phí)</option>
                   <option value="tiktok_tts">TikTok TTS (Giọng từ Session TikTok)</option>
                   <option value="kokoro_tts">Kokoro TTS (Anh/Mỹ/..., local)</option>
+                  <option value="piper_local">Piper tiếng Việt (CPU, runtime đã cài)</option>
                 </select>
               </div>
 
               <div className="space-y-1.5">
                 <label className="text-xs font-semibold text-text">Giọng cụ thể</label>
-                {profile.ttsEngine === 'tiktok_tts' ? (
+                {profile.ttsEngine === 'piper_local' ? (
+                  <div className="text-xs text-text-muted">vi_VN-vais1000-medium · tiếng Việt · không đổi engine khi lỗi<PiperRuntimeStatus/></div>
+                ) : profile.ttsEngine === 'tiktok_tts' ? (
                   <select
                     value={profile.specificVoice || 'BV074_streaming'}
                     onChange={(e) => handleChange('specificVoice', e.target.value)}
@@ -768,6 +811,16 @@ Output NOTHING else. No analysis, no planning, no alternative titles, no word co
                     <option value="BV075_streaming">TikTok — Tiếng Việt Nam (BV075)</option>
                     <option value="en_male_narration">TikTok — Story Teller (Anh/Mỹ)</option>
                     <option value="en_us_001">TikTok — Jessie Nữ (Anh/Mỹ)</option>
+                  </select>
+                ) : profile.ttsEngine === 'kokoro_tts' ? (
+                  <select aria-label="Giọng Kokoro" value={profile.specificVoice || ''}
+                    disabled={kokoroStatus !== 'success'}
+                    onChange={event => handleChange('specificVoice', event.target.value)}
+                    className="w-full rounded-md border border-border bg-bg px-3.5 py-2.5 text-xs text-white">
+                    <option value="">Chọn giọng Kokoro</option>
+                    {profile.specificVoice && !kokoroVoices.some(voice => voice.id === profile.specificVoice) &&
+                      <option value={profile.specificVoice} disabled>Giọng đã lưu chưa có trong danh sách Kokoro</option>}
+                    {kokoroVoices.map(voice => <option key={voice.id} value={voice.id}>{voice.name}</option>)}
                   </select>
                 ) : (
                   <select
@@ -1063,11 +1116,19 @@ Output NOTHING else. No analysis, no planning, no alternative titles, no word co
         </div>
 
         {/* MODAL FOOTER */}
-        <div className="flex h-16 shrink-0 items-center justify-between border-t border-border bg-[#0F172A]/95 px-6">
-          <div className="flex items-center gap-3">
+        <div className="flex min-h-16 shrink-0 flex-wrap items-center justify-between gap-3 border-t border-border bg-[#0F172A]/95 px-6 py-3">
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
             <span className="text-xs text-text-muted">Thay đổi áp dụng cho ý tưởng / video mới.</span>
             {profile.ttsEngine === 'kokoro_tts' && (
-              <span className="text-[11px] text-text-muted">Đang tải danh sách giọng kokoro...</span>
+              <div className="text-[11px] text-text-muted" role="status">
+                {kokoroStatus === 'loading' && <span>Đang tải danh sách giọng Kokoro...</span>}
+                {kokoroStatus === 'success' && <span>Đã tải {kokoroVoices.length} giọng Kokoro.</span>}
+                {kokoroStatus === 'empty' && <span>Server Kokoro chưa có giọng khả dụng.</span>}
+                {kokoroStatus === 'error' && <span>{kokoroError}</span>}
+                <button type="button" aria-label="Tải lại giọng Kokoro" disabled={kokoroStatus === 'loading'}
+                  onClick={() => setKokoroRetry(value => value + 1)} className="ml-2 underline disabled:opacity-50">Tải lại</button>
+                <p>Kokoro cần server local đang chạy. Timing từng từ là ước lượng theo audio; chưa xác nhận hỗ trợ tiếng Việt.</p>
+              </div>
             )}
             {profile.ttsEngine === 'tiktok_tts' && (
               <span className={`text-[11px] flex items-center gap-1 ${hasTikTokSession ? 'text-emerald-400' : 'text-amber-400'}`}>
@@ -1076,7 +1137,7 @@ Output NOTHING else. No analysis, no planning, no alternative titles, no word co
             )}
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex shrink-0 items-center gap-3 whitespace-nowrap">
             <button
               type="button"
               onClick={onClose}

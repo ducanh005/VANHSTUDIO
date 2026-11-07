@@ -107,9 +107,12 @@ async function main() {
       visualConfig = payload.flowConfig;
       return { assetPath: image, imagePath: image };
     };
-    await engine.regenerateSceneAsset({ sessionId: session.sessionId, sceneId: 'scene_01_shot_1', visualPrompt: 'Test' });
-    assert.equal(visualConfig.aspectRatio, '9:16');
-    assert.equal(visualConfig.projectId, 'project_A12345');
+    await assert.rejects(() => engine.regenerateSceneAsset({ sessionId: session.sessionId, sceneId: 'scene_01_shot_1', visualPrompt: 'Test' }), /FLOW_REGENERATION_REQUIRES_NEW_APPROVAL/);
+    assert.equal(visualConfig, undefined, 'Snapshot without credit approval must not invoke the generation provider');
+    const unchangedFlow=(await engine.getSessionConfig(session.sessionId)).flowEngine;
+    assert.equal(unchangedFlow.aspectRatio,'9:16');
+    assert.deepEqual(unchangedFlow,frozen.flowEngine,'Credit rejection must preserve the frozen episode configuration');
+    assert.equal((await engine.getState({sessionId:session.sessionId}))!.flowProjectUrl,'https://flow.google.com/project/project_A12345');
     session.stages[4] = { status: 'success', stageName: 'Alignment' };
     await engine.resume({ sessionId: session.sessionId, fromStage: 5, storyboardOptions: { granularity: 'detailed', shotMode: 'single' } }, () => {});
     assert.equal((await engine.getSessionConfig(session.sessionId)).flowEngine.granularity, 'detailed');
@@ -118,7 +121,7 @@ async function main() {
     await assert.rejects(() => engine.resume({ sessionId: session.sessionId, fromStage: 3, storyboardOptions: { granularity: 'fast' } }, () => {}), /Bước 5/);
     await assert.rejects(() => engine.resume({ sessionId: session.sessionId, fromStage: 5, storyboardOptions: { granularity: 'invalid' as any } }, () => {}), /không hợp lệ/);
     await new Promise((resolve) => setTimeout(resolve, 40));
-    console.log('PASS: encrypted snapshots, overrides, restart/project switch, real script/voice/render/regeneration routing and explicit per-session storyboard updates');
+    console.log('PASS: encrypted snapshots, overrides, restart/project switch, script/voice/render routing, unapproved regeneration rejection and explicit per-session storyboard updates');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 main().catch((err) => { console.error(err); process.exitCode = 1; });

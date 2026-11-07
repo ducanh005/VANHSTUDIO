@@ -275,7 +275,7 @@ export class ChromeManager {
       `--remote-debugging-port=${port}`,
       '--remote-debugging-address=127.0.0.1',
       `--user-data-dir=${profileDir}`,
-      '--disable-blink-features=AutomationControlled',
+      // Preserve standard Chromium automation indicators.
       '--no-first-run',
       '--no-default-browser-check',
       '--password-store=basic',

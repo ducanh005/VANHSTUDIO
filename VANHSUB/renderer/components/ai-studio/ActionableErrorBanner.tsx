@@ -58,8 +58,7 @@ export default function ActionableErrorBanner({
     lowerErr.includes('bot_flagged') ||
     lowerErr.includes('captcha_score_low') ||
     lowerErr.includes('recaptcha') ||
-    lowerErr.includes('bảo mật') ||
-    lowerErr.includes('chặn');
+    lowerErr.includes('captcha');
 
   const isBridgeDisconnected =
     code === 'BRIDGE_DISCONNECTED' ||
@@ -85,6 +84,9 @@ export default function ActionableErrorBanner({
     lowerErr.includes('ngắn hơn thời lượng yêu cầu') ||
     lowerErr.includes('lệch thời lượng') ||
     lowerErr.includes('còn thiếu');
+  const category = /api key|chưa sẵn sàng|thiếu cấu hình|chưa được cài|chưa lưu session|output directory/.test(lowerErr) ? 'configuration'
+    : /media|audio.*hỏng|video.*hỏng|ffmpeg|scene.*thiếu|thiếu.*scene|timing/.test(lowerErr) ? 'media'
+    : /provider|kokoro|piper|api|timeout|hết thời gian/.test(lowerErr) ? 'provider' : 'system';
 
   const handleOpenLobbyDefault = async () => {
     if (onOpenLobby) {
@@ -129,7 +131,10 @@ export default function ActionableErrorBanner({
                   ? 'QUÁ THỜI HẠN PHẢN HỒI (TIMEOUT)'
                   : isRateLimited
                   ? 'GIỚI HẠN TẦN SUẤT GỬI LỆNH (RATE LIMIT)'
-                  : 'LỖI PHÁT SINH TRONG TIẾN TRÌNH'}
+                  : category === 'configuration' ? 'THIẾU HOẶC SAI CẤU HÌNH'
+                  : category === 'media' ? 'LỖI MEDIA / TIMING'
+                  : category === 'provider' ? 'LỖI NHÀ CUNG CẤP'
+                  : 'LỖI HỆ THỐNG'}
               </h3>
               {code && (
                 <span className="rounded-md bg-rose-500/20 px-2 py-0.5 text-[10px] font-mono font-bold text-rose-300 border border-rose-500/30">

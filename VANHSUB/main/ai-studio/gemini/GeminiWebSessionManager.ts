@@ -5,7 +5,7 @@
  * inside an isolated, persistent Electron session partition:
  * - Session partition: 'persist:gemini_session' (Google cookies & login preserved indefinitely)
  * - Headless/Offscreen execution OR Live Window (user can watch AI typing)
- * - Google OAuth anti-bot mitigation: Firefox auth UA switcher, sec-ch-ua strip, webdriver removal
+ * - Keeps the platform browser identity; authentication is user-driven.
  * - Self-healing DOM interaction for Gemini rich-textarea and Quill contenteditable
  * - Multi-turn conversation chunking (similar to Revo Studio economy mode)
  */
@@ -49,7 +49,6 @@ export class GeminiWebSessionManager {
   private browserWindow: BrowserWindow | null = null;
   private isOffscreen = true;
   private isBusy = false;
-  private isHeaderHookConfigured = false;
 
   private constructor() {}
 
@@ -66,38 +65,7 @@ export class GeminiWebSessionManager {
       return null;
     }
     const ses = session.fromPartition('persist:gemini_session');
-    ses.setUserAgent(CHROME_DESKTOP_UA);
-
-    // Setup header modifications to bypass Google OAuth bot blockers
-    if (!this.isHeaderHookConfigured) {
-      try {
-        ses.webRequest.onBeforeSendHeaders(
-          { urls: ['https://*/*', 'http://*/*'] },
-          (details: any, callback: any) => {
-            const isGoogleAuth = details.url && details.url.includes('accounts.google.com');
-            if (isGoogleAuth) {
-              details.requestHeaders['User-Agent'] = GOOGLE_AUTH_UA;
-            } else {
-              details.requestHeaders['User-Agent'] = CHROME_DESKTOP_UA;
-            }
-
-            // Strip Electron / bot detection client hints
-            delete details.requestHeaders['sec-ch-ua'];
-            delete details.requestHeaders['sec-ch-ua-mobile'];
-            delete details.requestHeaders['sec-ch-ua-platform'];
-            delete details.requestHeaders['sec-ch-ua-full-version-list'];
-            delete details.requestHeaders['sec-ch-ua-arch'];
-            delete details.requestHeaders['sec-ch-ua-bitness'];
-            delete details.requestHeaders['sec-ch-ua-model'];
-
-            callback({ requestHeaders: details.requestHeaders });
-          }
-        );
-        this.isHeaderHookConfigured = true;
-      } catch (err) {
-        console.warn('[GeminiWebSession] Could not configure onBeforeSendHeaders:', err);
-      }
-    }
+    // Use the platform identity and client hints unchanged.
 
     return ses;
   }
@@ -135,32 +103,10 @@ export class GeminiWebSessionManager {
   }
 
   /**
-   * Configures webContents with anti-bot overrides (webdriver removal, OAuth popups, etc.).
+   * Configures ordinary window navigation without identity masking.
    */
   private configureWebContents(win: BrowserWindow): void {
-    win.webContents.setUserAgent(CHROME_DESKTOP_UA);
-
-    // Wipe navigator.webdriver on page load
-    win.webContents.on('dom-ready', () => {
-      win.webContents.executeJavaScript(`
-        try {
-          delete Object.getPrototypeOf(navigator).webdriver;
-          if (navigator.webdriver) {
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-          }
-        } catch (e) {}
-      `).catch(() => {});
-    });
-
-    // Handle OAuth navigation (Google Auth UA switcher)
-    win.webContents.on('did-navigate', (_event: any, url: string) => {
-      if (url.includes('accounts.google.com')) {
-        win.webContents.setUserAgent(GOOGLE_AUTH_UA);
-      } else {
-        win.webContents.setUserAgent(CHROME_DESKTOP_UA);
-      }
-    });
-
+    // Authentication remains user-driven; no webdriver/UA/client-hint masking.
     // Support OAuth popup login windows
     win.webContents.setWindowOpenHandler(({ url }) => {
       if (url.includes('accounts.google.com') || url.includes('google.com')) {

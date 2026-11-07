@@ -215,6 +215,9 @@ export class ExportRunner {
     let tempScaledSrtFile: string | null = null;
 
     try {
+      if (useDubbed && task.ttsNeedsRegeneration) {
+        throw new Error('Audio lồng tiếng chưa khớp phụ đề/cấu hình hiện tại. Hãy tạo lại TTS và ghép lồng tiếng, hoặc chọn Video gốc.');
+      }
       if (!videoPath || !fs.existsSync(videoPath)) {
         throw new Error(useDubbed
           ? 'Không tìm thấy video đã lồng tiếng. Hãy ghép lồng tiếng lại hoặc chọn nguồn Video gốc.'
@@ -413,7 +416,7 @@ export class ExportRunner {
               return;
             }
             TaskStore.update(taskId, {
-              progress: percent,
+              progress: Math.max(TaskStore.getById(taskId)?.progress || 0, Math.min(97, Math.round(percent * 0.97))),
               stageDescription: `Đang xuất video Hardsub (${percent}%)...`,
             });
             onUpdate?.();
@@ -466,7 +469,7 @@ export class ExportRunner {
         }
 
         TaskStore.update(taskId, {
-          progress: 100,
+          progress: 97,
           stageDescription: 'Ghép phụ đề mềm thành công!',
         });
         onUpdate?.();

@@ -13,6 +13,12 @@ function id(value: unknown): void { text(value, 128); if (!/^[a-zA-Z0-9_-]+$/.te
 
 /** Bound structured-clone payloads before the handler touches stores, paths or providers. */
 export function validateIpcPayload(channel: string, args: unknown[]): void {
+  if(process.env.NODE_ENV==='production'&&(channel.startsWith('debug:')||channel==='bridge:eval'||channel==='bridge:trigger-ui-gen'))invalid();
+  if(channel==='aiStudio:flow:connectReadOnly'&&args.length!==0)invalid();
+  if(channel==='aiStudio:media:readiness'){
+    if(args.length>1)invalid();
+    if(args[0]!==undefined){record(args[0]);if(Object.keys(args[0]).some(k=>k!=='sessionId'))invalid();if(args[0].sessionId!==undefined)id(args[0].sessionId);}
+  }
   let bytes = 0, nodes = 0;
   const visit = (value: unknown, depth: number) => {
     if (++nodes > 100000 || depth > 24) invalid();
@@ -28,6 +34,16 @@ export function validateIpcPayload(channel: string, args: unknown[]): void {
     }
   };
   visit(args, 0);
+  if (channel === 'aiStudio:voices:kokoro' && args.length !== 0) invalid();
+  if (channel === 'aiStudio:readiness' && args.length !== 0) invalid();
+  if (channel === 'aiStudio:voices:piperStatus' && args.length !== 0) invalid();
+  if (channel === 'aiStudio:manualSeo:save') {
+    if (args.length !== 1) invalid();
+    record(args[0]); id(args[0].sessionId); text(args[0].title,100); text(args[0].description,10000);
+    if (!Array.isArray(args[0].hashtags) || args[0].hashtags.length > 30) invalid();
+    for (const tag of args[0].hashtags) text(tag,100);
+    if (Object.keys(args[0]).some(key=>!['sessionId','title','description','hashtags'].includes(key))) invalid();
+  }
   if (/^(tasks:(get|update|delete|start|cancel|startHybrid|cancelHybrid|runPipeline|importSrt)|translate:(start|cancel)|tts:(start|cancel|regenerateLine|export-merged-audio)|ocr:(start|cancel)|export:(start|separateStems)|dubbing:(start|cancel)|downloader:(checkTask|cancelCheck))$/.test(channel)) id(args[0]);
   if (channel === 'downloader:checkTask' && !['source', 'output'].includes(String(args[1]))) invalid();
   if (channel === 'downloader:download') {
@@ -59,12 +75,17 @@ export function validateIpcPayload(channel: string, args: unknown[]): void {
     if (args[4] != null) {
       record(args[4]); const options = args[4];
       if (options.videoSource !== undefined && !['auto', 'original', 'dubbed'].includes(options.videoSource)) invalid();
-      if (options.formatOptions !== undefined) {
+      // The export UI sends null for the default/original format.
+      if (options.formatOptions != null) {
         record(options.formatOptions); const format = options.formatOptions;
         if (format.resolution !== undefined && !['original', '1080p', '720p', '480p'].includes(format.resolution)) invalid();
       }
     }
   }
   if (channel === 'tts:start' && args[2] !== undefined && (typeof args[2] !== 'number' || args[2] < 0.1 || args[2] > 5)) invalid();
+  if (channel === 'aiStudio:pipeline:startManualMedia') {
+    record(args[0]); id(args[0].projectId); filePath(args[0].srtPath); filePath(args[0].audioPath);
+    if (path.extname(args[0].srtPath).toLowerCase() !== '.srt') invalid();
+  }
   if (channel.startsWith('aiStudio:') && args[0] && typeof args[0] === 'object' && 'sessionId' in args[0]) id((args[0] as any).sessionId);
 }

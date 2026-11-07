@@ -64,6 +64,10 @@ async function main() {
   await reconnected.onmessage({ data: JSON.stringify({ type: 'CANCEL_JOB' }) });
   assert.deepEqual(handled.slice(-2), ['LONG_JOB', 'CANCEL_JOB'], 'Cancellation is not queued behind a long-running handler');
   context.releaseLong(); await longJob;
+  vm.runInContext("handleMessage = async () => { throw new Error('FLOW_PROJECT_REQUIRED: Project must be linked'); };", context);
+  await reconnected.onmessage({ data: JSON.stringify({ id: 'missing-project-request', method: 'batch_rpc' }) });
+  assert.equal(reconnected.sent.at(-1).id, 'missing-project-request');
+  assert.match(reconnected.sent.at(-1).error, /^FLOW_PROJECT_REQUIRED:/, 'Rejected handlers reply immediately rather than leaving the app waiting for timeout');
   socket.onclose();
   listener({ type: 'BRIDGE_PAIRING_STATUS' }, { id: 'a'.repeat(32), url: extension + 'pairing.html' }, (value: any) => { response = value; });
   assert.equal(response.connected, true, 'Stale socket callback does not reset new connection');

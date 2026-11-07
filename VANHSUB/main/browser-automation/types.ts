@@ -191,6 +191,9 @@ export interface SessionRecord {
  * - 1 human-in-the-loop state: BLOCKED_REQUIRES_USER (when anti-bot challenge or reCAPTCHA is encountered)
  */
 export type JobState =
+  | 'NOT_SUBMITTED'
+  | 'GENERATING'
+  | 'RECONCILIATION_REQUIRED'
   | 'QUEUED'
   | 'SUBMITTING'
   | 'SUBMITTED'
@@ -224,6 +227,10 @@ export interface VisualJobRecord {
 }
 
 export interface FlowGenerationAutomationOptions {
+  beforeInput?: (page: Page, baseline: {assetIds:string[]}) => Promise<void>;
+  onSubmissionState?: (state:'SUBMITTING'|'GENERATING'|'RECONCILIATION_REQUIRED'|'NOT_SUBMITTED'|'FAILED',details?:{assetId?:string;mediaUrl?:string;promptSha256?:string})=>Promise<void>;
+  requireCreditApproval?: boolean;
+  beforeSubmit?: (page: Page) => Promise<void>;
   prompt: string;
   projectId?: string;
   mode: 'image' | 'video';
@@ -238,6 +245,8 @@ export interface FlowGenerationAutomationOptions {
 }
 
 export interface FlowGenerationAutomationResult {
+  remoteMediaReady?: boolean;
+  promptSha256?: string;
   ok: boolean;
   state: JobState;
   jobId?: string;

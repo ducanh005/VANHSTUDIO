@@ -133,7 +133,12 @@ export const StoryboardSceneCard: React.FC<StoryboardSceneCardProps> = ({
             </div>
           )}
           <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="text-text-muted">
+            {scene.mediaProvenance?.source === 'manual_import' && scene.mediaProvenance.assetPath === scene.assetPath && (
+              <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-300" title="Media nhập thủ công đã kiểm định; không phải generation tự động thành công.">Nhập thủ công</span>
+            )}
+            {scene.mediaProvenance?.source==='official_api'&&scene.mediaProvenance.assetPath===scene.assetPath&&<span className="rounded bg-cyan-500/15 px-1.5 py-0.5 text-cyan-300" title={`${scene.mediaProvenance.model} · ${scene.mediaProvenance.task}`}>Official API · đã kiểm định</span>}
+              {scene.mediaProvenance?.source==='google_flow_ui'&&scene.mediaProvenance.assetPath===scene.assetPath&&<span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-emerald-300" title="Artifact đã kiểm định. Credit thực tế chưa đối soát; không phải bằng chứng nghiệm thu toàn pipeline.">Flow credits · media đã kiểm định</span>}
+              <span className="text-text-muted">
               Xử lý: {processedDurSec}s
             </span>
             {originalDurSec && (
@@ -366,7 +371,7 @@ export const StoryboardSceneCard: React.FC<StoryboardSceneCardProps> = ({
       ) : (
         <div className="rounded-md border border-dashed border-border bg-bg p-3 text-center text-text-muted text-[11px] flex items-center justify-center gap-2">
           <Clock className="h-3.5 w-3.5 text-text-faint" />
-          <span>Media chưa được sinh. Bấm Tiếp tục sang Bước 6 để Flow tự động tạo.</span>
+          <span>{scene.manualMediaOnly ? 'Chọn ảnh hoặc video từ máy để gắn vào cảnh này.' : 'Chưa có media. Kiểm tra route của episode rồi tạo ở Bước 6 hoặc nhập từ máy.'}</span>
         </div>
       )}
 
@@ -392,7 +397,7 @@ export const StoryboardSceneCard: React.FC<StoryboardSceneCardProps> = ({
           <button
             type="button"
             onClick={() => onRegenerate('image')}
-            disabled={disableActions}
+            disabled={disableActions || scene.manualMediaOnly}
             className="rounded-lg border border-cyan-800/60 bg-surface-2 hover:bg-cyan-900/70 px-2.5 py-1 text-[11px] font-semibold text-accent hover:text-cyan-100 transition cursor-pointer flex items-center gap-1 disabled:opacity-50"
             title="Sinh lại ảnh AI mới từ visual prompt của phân cảnh này qua Flow"
           >
@@ -403,7 +408,7 @@ export const StoryboardSceneCard: React.FC<StoryboardSceneCardProps> = ({
           <button
             type="button"
             onClick={() => onRegenerate('video')}
-            disabled={disableActions}
+            disabled={disableActions || scene.manualMediaOnly}
             className="rounded-lg border border-emerald-800/60 bg-emerald-950/40 hover:bg-emerald-900/70 px-2.5 py-1 text-[11px] font-semibold text-emerald-300 hover:text-emerald-100 transition cursor-pointer flex items-center gap-1 disabled:opacity-50"
             title="Sinh lại video Veo từ ảnh hiện tại của phân cảnh này qua Flow"
           >

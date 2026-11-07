@@ -1,5 +1,6 @@
 import { decryptSecret, encryptSecret } from '../store/aiStudioStore';
 import type { AiStudioConfig, AiStudioSessionConfig, PartialAiStudioConfig, IdeaBlueprint } from './types';
+import { selectLlmProvider } from './llmProviderConfig';
 
 /** Resolve project defaults and explicit overrides once, before production starts. */
 export function resolveProductionConfig(
@@ -9,7 +10,7 @@ export function resolveProductionConfig(
 ): AiStudioConfig {
   const merged: AiStudioConfig = {
     ...base,
-    llm: { ...base.llm, ...options.llm },
+    llm: { ...selectLlmProvider(base.llm, options.llm?.provider), ...options.llm },
     voice: { ...base.voice, ...options.voice },
     flowEngine: { ...base.flowEngine, ...options.flowEngine },
     rendering: { ...base.rendering, ...options.rendering },
@@ -21,7 +22,7 @@ export function resolveProductionConfig(
     if (options.llm?.provider && !options.channelProfile?.aiProvider) {
       channel.aiProvider = options.llm.provider === 'custom' ? 'default' : options.llm.provider;
     }
-    if (channel.aiProvider && channel.aiProvider !== 'default') merged.llm.provider = channel.aiProvider;
+    merged.llm = selectLlmProvider(merged.llm, channel.aiProvider);
     // Explicit voice overrides must not be overridden again by the channel at Stage 3.
     const inferredVoiceProvider = options.voice?.voiceId?.endsWith('Neural') ? 'edge_tts'
       : options.voice?.voiceId && /^(BV0|en_)/.test(options.voice.voiceId) ? 'tiktok_tts' : undefined;
@@ -29,8 +30,10 @@ export function resolveProductionConfig(
     if (explicitVoiceProvider) {
       merged.voice.provider = explicitVoiceProvider;
       if (explicitVoiceProvider === 'edge_tts' || explicitVoiceProvider === 'tiktok_tts') channel.ttsEngine = explicitVoiceProvider;
+      if (explicitVoiceProvider === 'local_onnx') channel.ttsEngine = 'kokoro_tts';
+      if (explicitVoiceProvider === 'piper_local') channel.ttsEngine = 'piper_local';
       if (!options.voice?.voiceId && !options.channelProfile?.specificVoice) {
-        channel.specificVoice = explicitVoiceProvider === 'tiktok_tts' ? 'BV074_streaming' : 'vi-VN-HoaiMyNeural';
+        channel.specificVoice = explicitVoiceProvider === 'piper_local' ? 'vi_VN-vais1000-medium' : explicitVoiceProvider === 'local_onnx' ? 'af_heart' : explicitVoiceProvider === 'tiktok_tts' ? 'BV074_streaming' : 'vi-VN-HoaiMyNeural';
       }
     }
     if (options.voice?.voiceId && !options.channelProfile?.specificVoice) channel.specificVoice = options.voice.voiceId;

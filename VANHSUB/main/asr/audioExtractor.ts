@@ -3,6 +3,7 @@ import fs from 'fs';
 import { execFile } from 'child_process';
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
+import { CancelledError } from '../lib/cancel';
 
 // Thiết lập đường dẫn ffmpeg binary (hỗ trợ cả môi trường dev và packaged asar)
 const rawFfmpegPath = (ffmpegInstaller as any)?.path || (ffmpegInstaller as any)?.default?.path || '';
@@ -53,8 +54,10 @@ export function extractFullQualityAudio(
   inputPath: string,
   outputWavPath: string,
   onProgress?: (percent: number) => void,
+  options?: { shouldStop?: () => boolean },
 ): Promise<void> {
   return new Promise((resolve, reject) => {
+    if (options?.shouldStop?.()) return reject(new CancelledError());
     if (!fs.existsSync(inputPath)) {
       return reject(new Error(`Không tìm thấy file đầu vào: ${inputPath}`));
     }
@@ -64,23 +67,49 @@ export function extractFullQualityAudio(
       fs.mkdirSync(outDir, { recursive: true });
     }
 
-    ffmpeg(inputPath)
+    let timer: ReturnType<typeof setInterval> | undefined;
+    let settled = false;
+    let killed = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearInterval(timer);
+      if (options?.shouldStop?.()) reject(new CancelledError());
+      else if (error) reject(new Error(`Lỗi trích xuất audio gốc bằng ffmpeg: ${error.message}`));
+      else resolve();
+    };
+    const command = ffmpeg(inputPath)
       .noVideo()
       .audioFrequency(44100)
       .audioChannels(2)
       .audioCodec('pcm_s16le')
       .format('wav')
       .output(outputWavPath)
+      .on('start', () => {
+        // fluent-ffmpeg spawns this worker directly. Kill only this owned process,
+        // and wait for its terminal event before releasing the task/cleaning temp.
+        const checkStop = () => {
+          if (!settled && !killed && options?.shouldStop?.()) {
+            killed = true;
+            command.kill('SIGKILL');
+          }
+        };
+        if (options?.shouldStop) timer = setInterval(checkStop, 150);
+        checkStop();
+      })
       .on('progress', (progress) => {
+        if (options?.shouldStop?.()) return;
         if (progress && progress.percent && onProgress) {
           onProgress(Math.min(99, Math.round(progress.percent)));
         }
       })
-      .on('end', () => resolve())
-      .on('error', (err) => {
-        reject(new Error(`Lỗi trích xuất audio gốc bằng ffmpeg: ${err.message}`));
-      })
-      .run();
+      .on('end', () => finish())
+      .on('error', (err) => finish(err));
+    try {
+      command.run();
+    } catch (error) {
+      finish(error instanceof Error ? error : new Error(String(error)));
+    }
   });
 }
 

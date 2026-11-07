@@ -1,4 +1,6 @@
-import { MsEdgeTTS, OUTPUT_FORMAT, type ProsodyOptions } from 'msedge-tts';
+import type { ProsodyOptions } from 'msedge-tts';
+import { synthesizeEdgeSpeech, isTtsAccessDenied } from './edgeSpeech';
+import { CancelledError } from '../../lib/cancel';
 
 export interface EdgeVoiceInfo {
   id: string;
@@ -24,8 +26,7 @@ export const EDGE_VIETNAMESE_VOICES: EdgeVoiceInfo[] = [
 
 /**
  * EdgeTTSClient: Client tổng hợp tiếng Việt qua Microsoft Edge Speech API
- * - Miễn phí 100%, không cần tài khoản, không cần sessionid/cookie
- * - Tốc độ nhanh, ổn định, giọng đọc tự nhiên chuẩn Azure Neural
+ * Dùng thư viện Read Aloud không chính thức; provider có thể từ chối truy cập.
  */
 export class EdgeTTSClient {
   private static instance: EdgeTTSClient | null = null;
@@ -50,7 +51,8 @@ export class EdgeTTSClient {
   public async synthesize(
     text: string,
     voice: string = 'vi-VN-HoaiMyNeural',
-    speed: number = 1.0
+    speed: number = 1.0,
+    shouldStop?: () => boolean
   ): Promise<{ audio: Buffer }> {
     const trimmed = text.trim();
     if (!trimmed) {
@@ -82,54 +84,12 @@ export class EdgeTTSClient {
     const maxRetries = 2;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      const tts = new MsEdgeTTS();
-
+      if (shouldStop?.()) throw new CancelledError();
       try {
-        await tts.setMetadata(targetVoice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
-
-        const { audioStream } = tts.toStream(trimmed, prosodyOptions);
-
-        const result = await new Promise<{ audio: Buffer }>((resolve, reject) => {
-          const chunks: Buffer[] = [];
-          const timer = setTimeout(() => {
-            try {
-              tts.close();
-            } catch {}
-            reject(new Error('Edge TTS Timeout sau 25 giây.'));
-          }, 25_000);
-
-          audioStream.on('data', (chunk: Buffer) => {
-            chunks.push(chunk);
-          });
-
-          audioStream.on('end', () => {
-            clearTimeout(timer);
-            try {
-              tts.close();
-            } catch {}
-            const audioBuffer = Buffer.concat(chunks);
-            if (audioBuffer.length === 0) {
-              reject(new Error('Edge TTS trả về dữ liệu âm thanh rỗng.'));
-              return;
-            }
-            resolve({ audio: audioBuffer });
-          });
-
-          audioStream.on('error', (err: any) => {
-            clearTimeout(timer);
-            try {
-              tts.close();
-            } catch {}
-            reject(err);
-          });
-        });
-
-        return result;
+        return await synthesizeEdgeSpeech(trimmed, targetVoice, prosodyOptions, { shouldStop });
       } catch (err: any) {
+        if (shouldStop?.() || err instanceof CancelledError || isTtsAccessDenied(err)) throw err;
         lastError = err;
-        try {
-          tts.close();
-        } catch {}
 
         if (attempt < maxRetries) {
           console.warn(`[EdgeTTSClient] Lần thử ${attempt}/${maxRetries} thất bại (${err?.message || err}). Đang thử lại sau 800ms...`);

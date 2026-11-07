@@ -4,6 +4,7 @@ import fs from 'fs';
 import Store from 'electron-store';
 import { encryptPlatformSecret } from '../security/secretStorage';
 import { planLegacySecretMigration } from '../security/legacySecrets';
+import { selectLlmProvider } from '../ai-studio/llmProviderConfig';
 import {
   AiStudioConfig,
   DEFAULT_AI_STUDIO_CONFIG,
@@ -291,6 +292,10 @@ export function updateAiStudioConfig(
 
   let store = getAiStudioStore();
   const current = getAiStudioConfig({ decrypted: false });
+  if (isPlainRecord(partial.llm) && 'provider' in partial.llm &&
+      !['deepseek', 'openai', 'custom', 'chatgpt_web', 'gemini_web'].includes(partial.llm.provider as string)) {
+    throw new TypeError('Invalid LLM provider');
+  }
 
   const nextOutputDir =
     typeof partial.outputDir === 'string'
@@ -308,7 +313,7 @@ export function updateAiStudioConfig(
 
   const updated: AiStudioConfig = {
     llm: {
-      ...current.llm,
+      ...selectLlmProvider(current.llm, partial.llm?.provider),
       ...(isPlainRecord(partial.llm) ? partial.llm : {}),
     },
     voice: {

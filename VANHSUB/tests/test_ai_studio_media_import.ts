@@ -36,6 +36,11 @@ async function main() {
     let updated = (await engine.getState({ sessionId: session.sessionId }))!;
     assert.equal(updated.artifacts.scenes![0].videoPath, undefined);
     assert.equal(updated.artifacts.scenes![0].assetPath, result.imagePath);
+    assert.equal(updated.artifacts.scenes![0].mediaProvenance?.source, 'manual_import');
+    assert.equal(updated.artifacts.scenes![0].mediaProvenance?.automaticGeneration, false);
+    assert.equal(updated.artifacts.scenes![0].mediaProvenance?.sceneId, 'scene_01_shot_1');
+    assert.equal(updated.artifacts.scenes![0].mediaProvenance?.sessionId, session.sessionId);
+    assert.match(updated.artifacts.scenes![0].mediaProvenance?.sha256 || '', /^[a-f0-9]{64}$/);
     assert.equal(updated.artifacts.scenes![0].motionType, 'ken_burns');
     assert.equal(updated.artifacts.videoPath, undefined);
     assert.equal(updated.artifacts.metadata, undefined);
@@ -47,6 +52,7 @@ async function main() {
     assert.equal(resultVideo.success, true, resultVideo.error);
     updated = (await engine.getState({ sessionId: session.sessionId }))!;
     assert.equal(updated.artifacts.scenes![0].motionType, 'video');
+    assert.equal(updated.artifacts.scenes![0].mediaProvenance?.assetPath, resultVideo.videoPath);
     assert.equal(updated.artifacts.scenes![0].imagePath, oldImage, 'Video keeps its keyframe');
     const disguised = path.join(root, 'jpeg-disguised.png'); fs.copyFileSync(jpg, disguised);
     const disguisedBytes = fs.readFileSync(disguised);

@@ -28,7 +28,7 @@ export interface AiStudioLlmConfig {
   geminiWebMode?: 'offscreen' | 'visible';
 }
 
-export type TtsVoiceProvider = 'edge_tts' | 'tiktok_tts' | 'local_onnx';
+export type TtsVoiceProvider = 'edge_tts' | 'tiktok_tts' | 'local_onnx' | 'piper_local';
 
 export const TIKTOK_STUDIO_VOICES = [
   { id: 'BV074_streaming', label: 'Tiếng Việt — Nữ (BV074)', gender: 'female', lang: 'vi' },
@@ -38,6 +38,9 @@ export const TIKTOK_STUDIO_VOICES = [
 ] as const;
 
 export interface AiStudioVoiceConfig {
+  /** Local Kokoro-FastAPI base URL; never starts or installs the service. */
+  kokoroBaseUrl?: string;
+  kokoroTimeoutMs?: number;
   /** Nhà cung cấp giọng đọc: 'edge_tts' | 'tiktok_tts' | 'local_onnx' */
   provider: TtsVoiceProvider;
   /** ID giọng đọc (vd: 'vi-VN-HoaiMyNeural', 'vi-VN-NamMinhNeural', 'BV074_streaming', 'BV075_streaming') */
@@ -71,6 +74,25 @@ export interface StoryboardSynthesis {
 }
 
 export interface AiStudioFlowEngineConfig {
+  flowCreditConsent?: boolean;
+  flowCreditProjectId?: string;
+  flowGenerationLimit?: number;
+  flowMaxCredits?: number;
+  flowModelLabel?: string;
+  flowAllowUnknownCost?: boolean;
+  flowVideoMode?: 't2v' | 'i2v';
+  /** Trusted episode context; never accepts a renderer-selected receipt path. */
+  flowReceiptDir?: string;
+
+  officialImageModel?: string;
+  officialVideoModel?: string;
+  officialVideoMode?: 't2v' | 'i2v';
+  officialConsent?: boolean;
+  officialConsentProjectId?: string;
+  officialRequestLimit?: number;
+  officialAllowTrim?: boolean;
+  officialCostAcknowledged?: boolean;
+  officialBudgetNote?: string;
   /** Runtime request identity for explicit regeneration; stable across retries. */
   generationNonce?: string;
   /** Động cơ sinh visual media: 'flow' (Google Flow Automation) | 'synthetic' | 'rpc' | 'flow_rpc' */
@@ -249,7 +271,7 @@ export interface ChannelProfileConfig {
   /** 13. AI provider (văn bản) */
   aiProvider: 'default' | 'chatgpt_web' | 'gemini_web' | 'deepseek' | 'openai';
   /** 14. Giọng đọc (TTS) */
-  ttsEngine: 'edge_tts' | 'tiktok_tts' | 'kokoro_tts';
+  ttsEngine: 'edge_tts' | 'tiktok_tts' | 'kokoro_tts' | 'piper_local';
   /** 15. Giọng cụ thể */
   specificVoice: string;
   /** 16. Đồng bộ nhân vật */
@@ -341,17 +363,18 @@ export type PartialAiStudioConfig = DeepPartial<AiStudioConfig>;
 // ============================================================================
 
 export const DEFAULT_LLM_CONFIG: Readonly<AiStudioLlmConfig> = Object.freeze({
-  provider: 'deepseek',
+  provider: 'gemini_web',
+  geminiWebMode: 'visible',
   apiKey: '',
-  model: 'deepseek-chat',
+  model: '',
   baseUrl: '',
   temperature: 0.6,
   systemPromptPreset: 'youtube_story',
 });
 
 export const DEFAULT_VOICE_CONFIG: Readonly<AiStudioVoiceConfig> = Object.freeze({
-  provider: 'edge_tts',
-  voiceId: 'vi-VN-HoaiMyNeural',
+  provider: 'piper_local',
+  voiceId: 'vi_VN-vais1000-medium',
   rate: '+0%',
   pitch: '+0Hz',
   volume: '+0%',
@@ -359,8 +382,13 @@ export const DEFAULT_VOICE_CONFIG: Readonly<AiStudioVoiceConfig> = Object.freeze
 });
 
 export const DEFAULT_FLOW_ENGINE_CONFIG: Readonly<AiStudioFlowEngineConfig> = Object.freeze({
-  engine: 'rpc',
-  uiMode: 'offscreen',
+  engine: 'playwright',
+  uiMode: 'live_window',
+  preferUiGen: true,
+  maxRetries: 0,
+  flowVideoMode: 't2v',
+  flowGenerationLimit: 1,
+  flowCreditConsent: false,
   aspectRatio: '16:9',
   outputMode: 'image',
   shotMode: 'single',
@@ -432,8 +460,8 @@ export const DEFAULT_CHANNEL_PROFILE_CONFIG: Readonly<ChannelProfileConfig> = Ob
   targetLongDuration: '3_5_min',
   targetShortDuration: '90_120_sec',
   aiProvider: 'default',
-  ttsEngine: 'kokoro_tts',
-  specificVoice: 'vi-VN-HoaiMyNeural',
+  ttsEngine: 'piper_local',
+  specificVoice: 'vi_VN-vais1000-medium',
   characterSync: 'per_video',
   characterRole: '',
   characterImageMode: 'ai_draw',
@@ -614,6 +642,12 @@ export interface WordTimestamp {
 }
 
 export interface StoryboardScene {
+  officialGenerationNonce?: string;
+  officialTrimAllowed?: boolean;
+  manualMediaOnly?: boolean;
+  mediaProvenance?: { source: 'manual_import'; assetPath: string; sha256: string; importedAt: string; sessionId: string; sceneId: string; projectId?: string; automaticGeneration: false }
+    | { source:'google_flow_ui';assetPath:string;sha256:string;projectId:string;sessionId:string;sceneId:string;requestKey:string;assetId?:string;referenceSha256?:string;automaticGeneration:true;quotedCredits:number|null;actualCredits:null;hardCapVerified:false }
+    | { source:'official_api';provider:'official_gemini_api';model:string;task:'t2i'|'t2v'|'i2v';assetPath:string;sha256:string;sessionId:string;sceneId:string;projectId:string;requestKey:string;requestId?:string;referenceSha256?:string;generatedAt:string;automaticGeneration:true;durationSec?:number;width:number;height:number;fps?:number };
   id: string;
   shotId?: string;
   sceneId?: string;
@@ -625,6 +659,7 @@ export interface StoryboardScene {
   durationMs: number;
   lineText: string;
   visualPrompt: string;
+  motionPrompt?: string;
   negativePrompt?: string;
   motionType: 'ken_burns' | 'video';
   assetPath?: string;
@@ -640,6 +675,7 @@ export interface StoryboardScene {
 }
 
 export interface SeoMetadata {
+  source?: 'provider' | 'manual_authored';
   title: string;
   description: string;
   hashtags: string[];
@@ -674,6 +710,7 @@ export interface ScriptQualityAuditResult {
 }
 
 export interface PipelineSessionState {
+  manualMode?: boolean;
   productionRevision?: number;
   sessionId: string;
   /** Runtime only; recomputed on lookup. */
@@ -759,6 +796,8 @@ export interface StartPipelinePayload {
 export interface StartPipelineResult {
   sessionId: string;
 }
+
+export interface StartManualMediaPayload { projectId: string; srtPath: string; audioPath: string }
 
 export interface AutoFillIdeaPayload {
   topic: string;

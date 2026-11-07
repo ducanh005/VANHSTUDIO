@@ -1,13 +1,15 @@
 import type { PipelineSessionState } from './types';
 import { invalidateSessionArtifacts } from './sessionArtifacts';
 
-export function applySceneMedia(session: PipelineSessionState, shotId: string, media: { imagePath?: string; videoPath?: string; visualPrompt?: string }): void {
+export function applySceneMedia(session: PipelineSessionState, shotId: string, media: { imagePath?: string; videoPath?: string; visualPrompt?: string; provenance?: NonNullable<PipelineSessionState['artifacts']['scenes']>[number]['mediaProvenance'] }): void {
   const scene = session.artifacts.scenes?.find(item => item.id === shotId || item.shotId === shotId);
   if (!scene) throw new Error('Phân cảnh không tồn tại trong phiên này.');
   if (!media.imagePath && !media.videoPath) throw new Error('Không có media mới cho phân cảnh.');
   if (media.imagePath) scene.imagePath = media.imagePath;
   scene.videoPath = media.videoPath;
   scene.assetPath = media.videoPath || media.imagePath;
+  scene.mediaProvenance = media.provenance;
+  if (!media.videoPath) delete scene.originalMediaDurationSec;
   scene.motionType = media.videoPath ? 'video' : 'ken_burns';
   if (media.visualPrompt !== undefined) scene.visualPrompt = media.visualPrompt;
   scene.status = 'ready';

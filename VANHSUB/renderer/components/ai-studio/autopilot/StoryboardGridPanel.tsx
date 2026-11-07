@@ -224,7 +224,7 @@ export const StoryboardGridPanel: React.FC<StoryboardGridPanelProps> = ({
                           key={g}
                           type="button"
                           onClick={() => onChangeGranularity(g)}
-                          disabled={isRunning}
+                          disabled={isRunning || session?.manualMode}
                           className={`px-2.5 py-1 rounded-lg font-medium transition cursor-pointer disabled:opacity-50 ${
                             isSel
                               ? 'bg-accent/20 text-accent border border-accent/40 shadow'
@@ -302,7 +302,7 @@ export const StoryboardGridPanel: React.FC<StoryboardGridPanelProps> = ({
                     <button
                       type="button"
                       onClick={() => onChangeGranularity('balanced')}
-                      disabled={isRunning}
+                      disabled={isRunning || session?.manualMode}
                       className="shrink-0 px-2 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 font-semibold text-[11px] transition cursor-pointer disabled:opacity-50"
                     >
                       Tự động gộp (Cân bằng)
@@ -341,7 +341,7 @@ export const StoryboardGridPanel: React.FC<StoryboardGridPanelProps> = ({
                 <button
                   type="button"
                   onClick={() => onResumePipelineRun(null, 'regenerate_selected')}
-                  disabled={isRunning}
+                  disabled={isRunning || session?.manualMode}
                   className="flex items-center gap-1 rounded-lg border border-amber-600/60 bg-amber-950/60 hover:bg-amber-900/80 px-2.5 py-1 text-[11px] font-semibold text-amber-300 hover:text-white transition cursor-pointer disabled:opacity-50"
                   title={`Chạy lại tạo mới phiên bản cho ${safeSelectedShotIds.length} shot đã chọn`}
                 >
@@ -353,7 +353,7 @@ export const StoryboardGridPanel: React.FC<StoryboardGridPanelProps> = ({
               <button
                 type="button"
                 onClick={onRegenerateStoryboardOneToOne}
-                disabled={isRunning}
+                disabled={isRunning || session?.manualMode}
                 className="flex items-center gap-1 rounded-lg border border-cyan-700/60 bg-surface-2 hover:bg-cyan-900/80 px-2.5 py-1 text-[11px] font-medium text-accent hover:text-white transition cursor-pointer disabled:opacity-50"
                 title="Tái tạo lại Storyboard theo chuẩn 1 câu thoại = 1 phân cảnh (1:1), loại bỏ các phân cảnh con bị lặp lại"
               >
@@ -364,7 +364,7 @@ export const StoryboardGridPanel: React.FC<StoryboardGridPanelProps> = ({
               <button
                 type="button"
                 onClick={() => onResumePipelineRun(null, 'regenerate_all')}
-                disabled={isRunning}
+                disabled={isRunning || session?.manualMode}
                 className="flex items-center gap-1 rounded-lg border border-border bg-surface-2 hover:bg-surface-3 px-2.5 py-1 text-[11px] font-medium text-text hover:text-white transition cursor-pointer disabled:opacity-50"
                 title="Tạo phiên bản mới cho toàn bộ storyboard qua Flow (bảo toàn file cũ)"
               >
@@ -375,7 +375,7 @@ export const StoryboardGridPanel: React.FC<StoryboardGridPanelProps> = ({
               <button
                 type="button"
                 onClick={() => onResumePipelineRun(null, 'resume_missing')}
-                disabled={isRunning}
+                disabled={isRunning || session?.manualMode}
                 className="flex items-center gap-1.5 rounded-lg bg-emerald-600/80 hover:bg-emerald-500 px-3 py-1 text-[11px] font-bold text-white shadow transition cursor-pointer disabled:opacity-50"
                 title="Chỉ tạo các phân cảnh chưa có file trên đĩa"
               >

@@ -2,6 +2,9 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import {FlowCreditLedger} from '../FlowCreditLedger';
+import {flowCreditReadiness,assertFlowQuote} from '../../../shared/flowCreditPolicy';
+import {saveFlowImage} from '../../browser-automation/FlowImageArtifact';
 import http from 'http';
 import https from 'https';
 import ffmpeg from 'fluent-ffmpeg';
@@ -295,6 +298,11 @@ export class AiStudioVisualService {
     signal?: AbortSignal,
     onSceneComplete?: (scene: StoryboardScene, index: number) => void | Promise<void>
   ): Promise<VisualDispatchResult> {
+    if(!this.rpcClient){
+      const ready=flowCreditReadiness(flowConfig,flowConfig.flowCreditProjectId,scenes.length);
+      if(ready.status!=='CONFIGURATION_READY')throw Error('FLOW_CREDITS_BLOCKED: '+ready.reasons.join(' '));
+      if(!this.getBrowserAutomationAdapter().isConnected('flow'))throw Error('FLOW_CDP_REQUIRED: chưa kết nối Chrome Flow riêng; không suy session từ Gemini Web/Electron.');
+    }
     fs.mkdirSync(assetsDir, { recursive: true });
 
     // Mặc định luôn ưu tiên Pure Web RPC trừ khi chọn engine dom hoặc synthetic
@@ -389,9 +397,7 @@ export class AiStudioVisualService {
       if (useGoogleFlow) {
         let finalPath: string | null = null;
         let lastFlowErr: any = null;
-        const maxRetries = isPlaywrightConnected
-          ? 0
-          : (typeof flowConfig.maxRetries === 'number' ? flowConfig.maxRetries : 2);
+        const maxRetries = 0; // A generation is never automatically resubmitted.
 
         for (let retry = 0; retry <= maxRetries; retry++) {
           if (signal?.aborted) {
@@ -413,6 +419,7 @@ export class AiStudioVisualService {
             }
             const flowErr = classifyFlowRpcError(rawFlowErr);
             lastFlowErr = flowErr;
+            if(!this.rpcClient)throw flowErr; // Production UI route never retries or substitutes a failed generation.
             if (flowErr.code === 'CANCELLED') {
               throw flowErr;
             }
@@ -590,6 +597,10 @@ export class AiStudioVisualService {
     onProgress?: (pct: number, msg: string) => void,
     signal?: AbortSignal
   ): Promise<string> {
+    if (!this.rpcClient) {
+      if(!['playwright','browser_automation'].includes(flowConfig.engine||''))throw Error('FLOW_UI_REQUIRED: RPC cũ bị khóa; không retry unusual activity hoặc fallback API.');
+      return this.generateApprovedFlowUi(scene,outputPath,flowConfig,onProgress,signal);
+    }
     const rpcClient = this.getRpcClient();
 
     const bridge = FlowBridgeServer.getInstance();
@@ -801,68 +812,7 @@ export class AiStudioVisualService {
               });
             } catch (rpcGenErr: any) {
               const classified = classifyFlowRpcError(rpcGenErr);
-              if (classified.isUnusualActivity) {
-                this._preferUiImageGen = true;
-              }
-              if (classified.isUnusualActivity && isAutomationAvailable) {
-                console.warn(
-                  `[AiStudioVisualService] 🛡️ Pure RPC sinh keyframe bị Google chặn [${classified.code}]. ` +
-                  `Fallback sang CDP Trusted UI Generation (isTrusted=true)...`
-                );
-                try {
-                  const uiRes = await this.executeUiGeneration(effectivePrompt, uiTimeoutImage, effectiveProjectId, 'image', signal);
-                  console.log(
-                    `[AiStudioVisualService] 🔍 Kết quả UI keyframe fallback:`,
-                    uiRes ? (uiRes.ok ? `OK (rpcid=${uiRes.capturedRpc?.rpcid || 'dom'})` : `Lỗi (${uiRes.error})`) : 'NULL'
-                  );
-                  if (uiRes && uiRes.ok) {
-                    if (uiRes.firstImageUrl) {
-                      const extractedMediaId =
-                        uiRes.assetId ||
-                        (uiRes.firstImageUrl.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i) || [])[1] ||
-                        uiRes.firstImageUrl;
-                      imgGenResult = {
-                        images: [{ url: uiRes.firstImageUrl, mediaId: extractedMediaId, assetId: extractedMediaId }],
-                        firstImageUrl: uiRes.firstImageUrl,
-                        mediaId: extractedMediaId,
-                        projectId: effectiveProjectId,
-                      };
-                    } else if (uiRes.capturedRpc?.response) {
-                      let rpcData: any = null;
-                      const rpcid = uiRes.capturedRpc.rpcid || RPC_GEN_IMAGE;
-                      try {
-                        const parsed = parseBatchResponse(uiRes.capturedRpc.response, rpcid);
-                        if (parsed.ok) rpcData = parsed.data;
-                      } catch {}
-                      if (!rpcData && rpcid !== RPC_GEN_IMAGE) {
-                        try {
-                          const parsed = parseBatchResponse(uiRes.capturedRpc.response, RPC_GEN_IMAGE);
-                          if (parsed.ok) rpcData = parsed.data;
-                        } catch {}
-                      }
-                      const imgs = extractGeneratedImages(rpcData || uiRes.capturedRpc.response, rpcid);
-                      if (imgs && imgs.length > 0) {
-                        imgGenResult = {
-                          images: imgs,
-                          firstImageUrl: imgs[0].url,
-                          projectId: effectiveProjectId,
-                        };
-                      }
-                    }
-                  } else if (uiRes && (uiRes.state === 'BLOCKED_REQUIRES_USER' || uiRes.errorCode === 'BLOCKED_REQUIRES_USER')) {
-                    throw new GoogleFlowRpcError(
-                      'Google Flow chặn tác vụ do phát hiện hành vi tự động (BLOCKED_REQUIRES_USER). Cần người dùng tương tác mở tab Chrome để xác minh.',
-                      { code: 'PUBLIC_ERROR_UNUSUAL_ACTIVITY', retryable: false, suggestedAction: 'ABORT_HALT' }
-                    );
-                  }
-                } catch (uiErr: any) {
-                  if (isUnusualActivityError(uiErr) || uiErr?.code === 'PUBLIC_ERROR_UNUSUAL_ACTIVITY') {
-                    throw uiErr;
-                  }
-                  console.warn('[AiStudioVisualService] CDP Trusted UI fallback keyframe warning:', uiErr?.message || uiErr);
-                }
-              }
-              if (!imgGenResult) throw rpcGenErr;
+              throw classified;
             }
           }
 
@@ -1027,88 +977,7 @@ export class AiStudioVisualService {
               });
             } catch (rpcVidErr: any) {
               const classified = classifyFlowRpcError(rpcVidErr);
-              if (classified.isUnusualActivity) {
-                this._preferUiVideoGen = true;
-              }
-              if (classified.isUnusualActivity && isAutomationAvailable) {
-                console.warn(
-                  `[AiStudioVisualService] 🛡️ Pure RPC sinh video bị Google chặn [${classified.code}]. ` +
-                  `Fallback sang CDP Trusted UI Generation (isTrusted=true)...`
-                );
-                try {
-                  const uiRes = await this.executeUiGeneration(
-                    motionPrompt,
-                    uiTimeoutVideo,
-                    effectiveProjectId,
-                    'video',
-                    signal,
-                    {
-                      inputImageAsset: resolvedKeyframeAsset,
-                      sceneId: scene.id,
-                    }
-                  );
-                  console.log(
-                    `[AiStudioVisualService] 🔍 Kết quả UI video fallback:`,
-                    uiRes ? (uiRes.ok ? `OK (rpcid=${uiRes.capturedRpc?.rpcid || 'captured'})` : `Lỗi (${uiRes.error})`) : 'NULL'
-                  );
-                  if (uiRes && uiRes.ok) {
-                    if (uiRes.videoUrl) {
-                      genResult = {
-                        operationId: 'dom-extracted-video',
-                        projectId: effectiveProjectId,
-                        status: 'COMPLETED',
-                        done: true,
-                        videoUrl: uiRes.videoUrl,
-                      };
-                    } else if (uiRes.capturedRpc?.response) {
-                      let rpcData: any = null;
-                      try {
-                        const parsed = parseBatchResponse(uiRes.capturedRpc.response, RPC_GEN_VIDEO_REFERENCES);
-                        if (parsed.ok) rpcData = parsed.data;
-                      } catch {}
-                      if (!rpcData) {
-                        try {
-                          const parsed = parseBatchResponse(uiRes.capturedRpc.response, RPC_GEN_VIDEO_TEXT);
-                          if (parsed.ok) rpcData = parsed.data;
-                        } catch {}
-                      }
-                      if (!rpcData) {
-                        try {
-                          const parsed = parseBatchResponse(uiRes.capturedRpc.response, RPC_OPERATION);
-                          if (parsed.ok) rpcData = parsed.data;
-                        } catch {}
-                      }
-                      if (!rpcData) {
-                        try {
-                          const parsed = parseBatchResponse(uiRes.capturedRpc.response, RPC_MEDIA);
-                          if (parsed.ok) rpcData = parsed.data;
-                        } catch {}
-                      }
-                      const opStatus = extractOperationStatus(rpcData || uiRes.capturedRpc.response, RPC_GEN_VIDEO_REFERENCES);
-                      if (opStatus && (opStatus.operationId || opStatus.videoUrl)) {
-                        genResult = {
-                          operationId: opStatus.operationId,
-                          projectId: opStatus.projectId || effectiveProjectId,
-                          status: opStatus.status || 'RUNNING',
-                          done: opStatus.done,
-                          videoUrl: opStatus.videoUrl,
-                        };
-                      }
-                    }
-                  } else if (uiRes && (uiRes.state === 'BLOCKED_REQUIRES_USER' || uiRes.errorCode === 'BLOCKED_REQUIRES_USER')) {
-                    throw new GoogleFlowRpcError(
-                      'Google Flow chặn tác vụ do phát hiện hành vi tự động (BLOCKED_REQUIRES_USER). Cần người dùng tương tác mở tab Chrome để xác minh.',
-                      { code: 'PUBLIC_ERROR_UNUSUAL_ACTIVITY', retryable: false, suggestedAction: 'ABORT_HALT' }
-                    );
-                  }
-                } catch (uiVidErr: any) {
-                  if (isUnusualActivityError(uiVidErr) || uiVidErr?.code === 'PUBLIC_ERROR_UNUSUAL_ACTIVITY') {
-                    throw uiVidErr;
-                  }
-                  console.warn('[AiStudioVisualService] CDP Trusted UI fallback video warning:', uiVidErr?.message || uiVidErr);
-                }
-              }
-              if (!genResult) throw rpcVidErr;
+              throw classified;
             }
           }
 
@@ -1297,68 +1166,7 @@ export class AiStudioVisualService {
               });
             } catch (rpcImgErr: any) {
               const classified = classifyFlowRpcError(rpcImgErr);
-              if (classified.isUnusualActivity) {
-                this._preferUiImageGen = true;
-              }
-              if (classified.isUnusualActivity && isAutomationAvailable) {
-                console.warn(
-                  `[AiStudioVisualService] 🛡️ Pure RPC sinh ảnh bị Google chặn [${classified.code}]. ` +
-                  `Fallback sang CDP Trusted UI Generation (isTrusted=true)...`
-                );
-                try {
-                  const uiRes = await this.executeUiGeneration(effectivePrompt, uiTimeoutImage, effectiveProjectId, 'image', signal);
-                  console.log(
-                    `[AiStudioVisualService] 🔍 Kết quả UI image fallback:`,
-                    uiRes ? (uiRes.ok ? `OK (rpcid=${uiRes.capturedRpc?.rpcid || 'dom'})` : `Lỗi (${uiRes.error})`) : 'NULL'
-                  );
-                  if (uiRes && uiRes.ok) {
-                    if (uiRes.firstImageUrl) {
-                      const extractedMediaId =
-                        uiRes.assetId ||
-                        (uiRes.firstImageUrl.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i) || [])[1] ||
-                        uiRes.firstImageUrl;
-                      genResult = {
-                        images: [{ url: uiRes.firstImageUrl, mediaId: extractedMediaId, assetId: extractedMediaId }],
-                        firstImageUrl: uiRes.firstImageUrl,
-                        mediaId: extractedMediaId,
-                        projectId: effectiveProjectId,
-                      };
-                    } else if (uiRes.capturedRpc?.response) {
-                      let rpcData: any = null;
-                      const rpcid = uiRes.capturedRpc.rpcid || RPC_GEN_IMAGE;
-                      try {
-                        const parsed = parseBatchResponse(uiRes.capturedRpc.response, rpcid);
-                        if (parsed.ok) rpcData = parsed.data;
-                      } catch {}
-                      if (!rpcData && rpcid !== RPC_GEN_IMAGE) {
-                        try {
-                          const parsed = parseBatchResponse(uiRes.capturedRpc.response, RPC_GEN_IMAGE);
-                          if (parsed.ok) rpcData = parsed.data;
-                        } catch {}
-                      }
-                      const imgs = extractGeneratedImages(rpcData || uiRes.capturedRpc.response, rpcid);
-                      if (imgs && imgs.length > 0) {
-                        genResult = {
-                          images: imgs,
-                          firstImageUrl: imgs[0].url,
-                          projectId: effectiveProjectId,
-                        };
-                      }
-                    }
-                  } else if (uiRes && (uiRes.state === 'BLOCKED_REQUIRES_USER' || uiRes.errorCode === 'BLOCKED_REQUIRES_USER')) {
-                    throw new GoogleFlowRpcError(
-                      'Google Flow chặn tác vụ do phát hiện hành vi tự động (BLOCKED_REQUIRES_USER). Cần người dùng tương tác mở tab Chrome để xác minh.',
-                      { code: 'PUBLIC_ERROR_UNUSUAL_ACTIVITY', retryable: false, suggestedAction: 'ABORT_HALT' }
-                    );
-                  }
-                } catch (uiErr: any) {
-                  if (isUnusualActivityError(uiErr) || uiErr?.code === 'PUBLIC_ERROR_UNUSUAL_ACTIVITY') {
-                    throw uiErr;
-                  }
-                  console.warn('[AiStudioVisualService] CDP Trusted UI fallback image warning:', uiErr?.message || uiErr);
-                }
-              }
-              if (!genResult) throw rpcImgErr;
+              throw classified;
             }
           }
 
@@ -1426,6 +1234,84 @@ export class AiStudioVisualService {
   // ==========================================================================
   // Media Asset Downloader & Storage Guard
   // ==========================================================================
+  private async generateApprovedFlowUi(scene:StoryboardScene,outputPath:string,config:Partial<AiStudioFlowEngineConfig>,progress?: (pct:number,msg:string)=>void,signal?:AbortSignal):Promise<string>{
+    const ready=flowCreditReadiness(config,config.flowCreditProjectId);
+    if(ready.status!=='CONFIGURATION_READY'||!config.flowReceiptDir||!config.projectId)throw Error('FLOW_APPROVAL_REQUIRED: '+ready.reasons.join(' '));
+    const adapter=this.getBrowserAutomationAdapter();
+    if(!adapter.isConnected('flow'))throw Error('FLOW_CDP_REQUIRED: kết nối đúng Chrome test trước; không dùng cookie/partition khác làm bằng chứng đăng nhập.');
+    const mode=scene.motionType==='video'?'video':'image',task=mode==='image'?'t2i':config.flowVideoMode||'t2v';
+    const prompt=[scene.visualPrompt||scene.lineText,mode==='video'?scene.motionPrompt:'',scene.negativePrompt||config.negativePrompt?'Avoid: '+(scene.negativePrompt||config.negativePrompt):''].filter(Boolean).join('\n');
+    if(!prompt.trim()||prompt.length>12000)throw Error('FLOW_PROMPT_INVALID');
+    let referenceHash:string|undefined,assetId:string|undefined;
+    if(task==='i2v'){
+      const p=scene.mediaProvenance;
+      if(p?.source!=='google_flow_ui'||!p.assetId||!scene.imagePath||p.assetPath!==scene.imagePath||p.projectId!==config.projectId||p.sceneId!==(scene.shotId||scene.id)||p.sessionId!==path.basename(path.dirname(config.flowReceiptDir)))throw Error('FLOW_I2V_PROVENANCE_REQUIRED: cần keyframe Flow đã xác minh đúng scene/project; không tự sinh thêm ảnh.');
+      referenceHash=crypto.createHash('sha256').update(fs.readFileSync(scene.imagePath)).digest('hex');
+      if(referenceHash!==p.sha256)throw Error('FLOW_KEYFRAME_CHANGED');assetId=p.assetId;
+    }
+    const key=crypto.createHash('sha256').update(JSON.stringify([config.projectId,scene.id,task,prompt,config.flowModelLabel,referenceHash,config.generationNonce||'initial'])).digest('hex');
+    const ledger=new FlowCreditLedger(config.flowReceiptDir,key),old=ledger.read();
+    const sessionId=path.basename(path.dirname(config.flowReceiptDir)),promptSha256=crypto.createHash('sha256').update(prompt.replace(/\r\n?/g,'\n').trim()).digest('hex');
+    if(old&&(old.version!==2||old.projectId!==config.projectId||old.sceneId!==scene.id||old.sessionId!==sessionId||old.promptSha256!==promptSha256))throw Error('FLOW_RECONCILIATION_REQUIRED: receipt cũ hoặc không khớp, không thay đổi hay tự submit lại.');
+    if(old?.state==='COMPLETED'){
+      if(!old.localPath||!fs.existsSync(old.localPath)||path.dirname(fs.realpathSync(old.localPath))!==fs.realpathSync(path.dirname(outputPath))||crypto.createHash('sha256').update(fs.readFileSync(old.localPath)).digest('hex')!==old.sha256)throw Error('FLOW_RECONCILIATION_REQUIRED: receipt/output cần đối soát, không tự click lại.');
+      await this.validateMediaFile(old.localPath,mode,{fullDecode:true});
+      scene.mediaProvenance={source:'google_flow_ui',assetPath:old.localPath,sha256:old.sha256,projectId:config.projectId,sessionId:path.basename(path.dirname(config.flowReceiptDir)),sceneId:scene.shotId||scene.id,requestKey:key,assetId:old.assetId,referenceSha256:old.referenceSha256,automaticGeneration:true,quotedCredits:old.quotedCredits,actualCredits:null,hardCapVerified:false};
+      if(mode==='image')scene.imagePath=old.localPath;else scene.videoPath=old.localPath;return old.localPath;
+    }
+    if(old&&!old.remote)throw Error('FLOW_RECONCILIATION_REQUIRED: không có output được đối soát, không tự click lại.');
+    const approval={model:config.flowModelLabel!,mode,task,limit:config.flowGenerationLimit!,maxCredits:config.flowMaxCredits!,allowUnknownCost:config.flowAllowUnknownCost===true,sceneId:scene.id,projectId:config.projectId,sessionId,promptSha256};
+    signal?.throwIfAborted();progress?.(5,'Google Flow — kiểm tra phiên, model và x1; chưa generation.');
+    let lastProgress=5;
+    try{
+    const result:import('../../browser-automation/types').FlowGenerationAutomationResult=old?.remote?{ok:true,state:'GENERATING',remoteMediaReady:true,firstImageUrl:old.remote.url,assetId:old.remote.assetId,projectId:config.projectId,sceneId:scene.id,promptSha256}:await adapter.executeFlowGeneration({prompt,projectId:config.projectId,mode,signal,sceneId:scene.id,inputImageAsset:assetId,bringToFront:true,timeoutMs:mode==='video'?180000:90000,requireCreditApproval:true,
+      beforeInput:async(page,baseline)=>{
+        signal?.throwIfAborted();const state=await adapter.evaluateFlowSessionState(page);
+        if(state.state!=='FLOW_READY'||state.projectId!==config.projectId)throw Error('FLOW_SESSION_OR_PROJECT_UNVERIFIED');
+        const reservedQuote=await adapter.inspectFlowCreditState(page,approval.model);
+        if(!reservedQuote.model||reservedQuote.outputs==null||reservedQuote.credits==null)throw Error('FLOW_QUOTE_UNREADABLE: chưa đọc được model/x1/giá trên Flow UI; không giữ chỗ theo quote mù.');
+        ledger.reserve({...approval,baselineAssetIds:baseline.assetIds},reservedQuote);
+      },
+      onSubmissionState:async(state,details)=>{ledger.transition(state,details);lastProgress=Math.max(lastProgress,state==='GENERATING'?35:10);progress?.(lastProgress,state);},
+      beforeSubmit:async page=>{
+        signal?.throwIfAborted();
+        const state=await adapter.evaluateFlowSessionState(page);
+        if(state.state!=='FLOW_READY'||state.projectId!==config.projectId)throw Error('FLOW_SESSION_OR_PROJECT_UNVERIFIED');
+        const quote=await adapter.inspectFlowCreditState(page,approval.model);
+        if(mode==='video')ledger.reserve(approval,quote);
+        else{
+          const record=ledger.read();if(!record||record.promptSha256!==promptSha256||quote.credits!==record.quotedCredits)throw Error('FLOW_QUOTE_CHANGED');
+          assertFlowQuote({...approval,remainingCredits:approval.maxCredits},quote);
+        }
+      }});
+    signal?.throwIfAborted();
+    if(!result.ok||(mode==='image'?(!result.remoteMediaReady||result.projectId!==config.projectId||result.sceneId!==scene.id||result.promptSha256!==promptSha256||!result.assetId):result.state!=='COMPLETED'))throw Error('FLOW_STOPPED: '+('errorCode' in result?result.errorCode:'generation chưa xác minh')+'; giữ receipt, không retry hoặc đổi provider.');
+    const url=mode==='video'?result.videoUrl:result.firstImageUrl;if(!url)throw Error('FLOW_MEDIA_MISSING');
+    let finalPath:string;
+    if(mode==='image'){
+      const prior=ledger.read().validatedArtifact;
+      if(prior&&fs.existsSync(prior.localPath)){
+        if(path.dirname(fs.realpathSync(prior.localPath))!==fs.realpathSync(path.dirname(outputPath))||crypto.createHash('sha256').update(fs.readFileSync(prior.localPath)).digest('hex')!==prior.sha256)throw Error('FLOW_ARTIFACT_RECOVERY_MISMATCH');
+        await this.validateMediaFile(prior.localPath,'image',{fullDecode:true});signal?.throwIfAborted();finalPath=prior.localPath;
+      }else{
+        const context=adapter.getContext('flow');if(!context)throw Error('FLOW_DOWNLOAD_SESSION_MISSING');
+        finalPath=(await saveFlowImage(context.request,url,outputPath,signal,async artifact=>ledger.validatedArtifact(artifact))).localPath;
+      }
+    }else{
+    const target=outputPath.replace(/\.[^.]+$/,mode==='video'?'.mp4':'.png');
+    if(fs.existsSync(target))throw Error('FLOW_OUTPUT_EXISTS');
+    await this.downloadMediaAsset(url,target,{signal,browserContextOnly:true});
+    const validPath=await this.validateMediaFile(target,mode,{fullDecode:true});finalPath=typeof validPath==='string'?validPath:target;
+    }
+    const sha256=crypto.createHash('sha256').update(fs.readFileSync(finalPath)).digest('hex');
+    ledger.complete({localPath:finalPath,sha256,assetId:result.assetId,referenceSha256:referenceHash});
+    const record=ledger.read();
+    scene.mediaProvenance={source:'google_flow_ui',assetPath:finalPath,sha256,projectId:config.projectId,sessionId:path.basename(path.dirname(config.flowReceiptDir)),sceneId:scene.shotId||scene.id,requestKey:key,assetId:result.assetId,referenceSha256:referenceHash,automaticGeneration:true,quotedCredits:record.quotedCredits,actualCredits:null,hardCapVerified:false};
+    if(mode==='image')scene.imagePath=finalPath;else scene.videoPath=finalPath;
+    progress?.(100,'Media Flow đã tải và giải mã; credit thực tế chưa đối soát.');return finalPath;
+    }catch(error){const record=ledger.read();if(record?.version===2&&!['COMPLETED','FAILED','NOT_SUBMITTED'].includes(record.state))ledger.transition('RECONCILIATION_REQUIRED',{promptSha256});throw error;}
+  }
+
   public async downloadMediaAsset(
     urlOrData: string,
     destinationPath: string,
@@ -1436,6 +1322,7 @@ export class AiStudioVisualService {
       partition?: string;
       cookie?: string;
       headers?: Record<string, string>;
+      browserContextOnly?: boolean;
     }
   ): Promise<string> {
     fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
@@ -1449,6 +1336,11 @@ export class AiStudioVisualService {
     }
 
     let targetUrl = urlOrData.trim();
+    if(options?.browserContextOnly){
+      const u=new URL(targetUrl);if(u.protocol!=='https:'||u.username||u.password||!['googleusercontent.com','googleapis.com','gstatic.com','labs.google','flow.google.com','flow-content.google'].some(h=>u.hostname===h||u.hostname.endsWith('.'+h)))throw Error('FLOW_DOWNLOAD_URL_UNTRUSTED');
+      const context=this.getBrowserAutomationAdapter().getContext('flow');if(!context)throw Error('FLOW_DOWNLOAD_SESSION_MISSING');
+      const response=await context.request.get(targetUrl,{timeout:90000,maxRedirects:0});try{if(!response.ok())throw Error('FLOW_DOWNLOAD_FAILED');const bytes=await response.body();options.signal?.throwIfAborted();if(!bytes.length||bytes.length>128*1024*1024)throw Error('FLOW_DOWNLOAD_SIZE_INVALID');fs.writeFileSync(destinationPath,bytes,{flag:'wx'});return destinationPath;}finally{await response.dispose();}
+    }
 
     // 0. Local filesystem path that exists (check before URL normalization)
     if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://') && !targetUrl.startsWith('data:') && fs.existsSync(targetUrl)) {
@@ -2062,11 +1954,7 @@ export class AiStudioVisualService {
 
     let lastErr: any = null;
     if (useGoogleFlow) {
-      const maxRetries = isPlaywrightConnected
-        ? 0
-        : typeof payload.flowConfig?.maxRetries === 'number'
-        ? payload.flowConfig.maxRetries
-        : 2;
+      const maxRetries = 0;
 
       for (let retry = 0; retry <= maxRetries; retry++) {
         if (signal?.aborted) {

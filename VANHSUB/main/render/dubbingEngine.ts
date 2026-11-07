@@ -605,7 +605,7 @@ export async function dubVideo(
       fs.mkdirSync(separationDir, { recursive: true });
       const origWav = path.join(separationDir, 'original.wav');
       console.log('[Dubbing] Trích audio gốc (44.1kHz stereo) cho AI tách lời...');
-      await extractFullQualityAudio(videoPath, origWav);
+      await extractFullQualityAudio(videoPath, origWav, undefined, { shouldStop: options?.shouldStop });
       onProgress?.(3);
       backgroundAudioPath = (await separateVocals(origWav, separationDir, options?.shouldStop)).noVocals;
       onProgress?.(14);

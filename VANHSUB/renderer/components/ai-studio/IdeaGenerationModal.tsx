@@ -132,8 +132,10 @@ export default function IdeaGenerationModal({
       setThumbnailConcept(finalThumbConcept);
       setThumbnailPrompt(finalThumbPrompt);
 
+      const usedProvider = config.channelProfile?.aiProvider && config.channelProfile.aiProvider !== 'default'
+        ? config.channelProfile.aiProvider : config.llm.provider;
       setSuccessMessage(
-        `AI (${config.llm.provider === 'chatgpt_web' ? 'ChatGPT Web' : config.llm.provider === 'gemini_web' ? 'Gemini Web' : config.llm.provider.toUpperCase()}) đã sinh mẫu ý tưởng thành công theo Cấu hình Kênh [${config.channelProfile?.projectName || 'Mặc định'}]!`
+        `AI (${usedProvider === 'chatgpt_web' ? 'ChatGPT Web' : usedProvider === 'gemini_web' ? 'Gemini Web' : usedProvider.toUpperCase()}) đã sinh mẫu ý tưởng thành công theo Cấu hình Kênh [${config.channelProfile?.projectName || 'Mặc định'}]!`
       );
       setTimeout(() => setSuccessMessage(null), 4000);
     } catch (err: any) {

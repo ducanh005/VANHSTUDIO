@@ -37,8 +37,8 @@ async function main() {
     assert.equal(initial?.status, 'done', initial?.errorMessage);
     let audioDir = initial!.ttsAudioDir!;
     const initialAudioDir = audioDir;
-    const audio = (index: number) => fs.readFileSync(path.join(audioDir, `subtitle_${String(index).padStart(4, '0')}.mp3`));
-    const manifest = () => JSON.parse(fs.readFileSync(path.join(audioDir, 'manifest.json'), 'utf8'));
+    const audio = (index: number) => fs.readFileSync(path.join(TaskStore.getById(task.id)!.ttsAudioDir!, `subtitle_${String(index).padStart(4, '0')}.mp3`));
+    const manifest = () => JSON.parse(fs.readFileSync(path.join(TaskStore.getById(task.id)!.ttsAudioDir!, 'manifest.json'), 'utf8'));
     const previous = audio(1);
     const untouched = audio(3);
     const shortenedCache = manifest();
@@ -90,12 +90,14 @@ async function main() {
     assert.equal((await pending).ok, true);
 
     const safeAudio = audio(1);
+    const completedMp3 = TaskStore.getById(task.id)!.ttsMergedAudioPath;
     write('Too long.');
     const failed = await TTSRunner.regenerateLine(task.id, 2);
     assert.equal(failed.ok, false);
     assert.match(failed.error || '', /TTS timing conflict/);
     assert.deepEqual(audio(1), safeAudio, 'Do not replace the chosen audio with an invalid candidate');
-    assert.equal(TaskStore.getById(task.id)!.ttsMergedAudioPath, undefined);
+    assert.equal(TaskStore.getById(task.id)!.ttsMergedAudioPath, completedMp3, 'Keep the completed MP3 pointer on failure');
+    assert.equal(TaskStore.getById(task.id)!.ttsNeedsRegeneration, true, 'Preserved old audio must stay blocked for new dubbing');
     assert.equal(TTSRunner.isRunning(task.id), false);
     console.log('PASS: member regeneration, cache reuse, timing adaptation, voice split/rejoin, MP3 refresh and concurrent/failure guards');
   } finally {

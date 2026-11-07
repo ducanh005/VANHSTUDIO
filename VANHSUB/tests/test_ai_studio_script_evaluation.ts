@@ -37,9 +37,7 @@ async function main() {
   await assert.rejects(() => service.evaluateScript(original, undefined, undefined, config));
   (service as any).requestScriptReview = async () => { throw new Error('provider failed'); };
   await assert.rejects(() => service.evaluateScript(original, undefined, undefined, config), /provider failed/);
-  const empty = await service.evaluateScript([], undefined, undefined, config);
-  assert.equal(empty.overallScore, 0);
-  assert.equal(empty.criteria.length, 0);
+  await assert.rejects(() => service.evaluateScript([], undefined, undefined, config), /Kịch bản/);
   console.log('PASS: actual provider ratings, evaluationLlm routing, credential boundary, full schema validation and no fabricated fallback');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

@@ -18,6 +18,7 @@
 
 import { EventEmitter } from 'events';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core';
+import {runApprovedT2i} from './FlowT2iSubmission';
 import {
   type AutomationProvider,
   type BrowserSession,
@@ -296,7 +297,7 @@ export class BrowserAutomationAdapter extends EventEmitter {
       options.predicate ?? (options.targetUrl ? options.targetUrl : undefined);
     if (searchPredicate) {
       for (const page of pages) {
-        if (await this.matchesPredicate(page, searchPredicate)) {
+        if ((!options.automationOwned || this.isTabAutomationOwned(page)) && await this.matchesPredicate(page, searchPredicate)) {
           this.bindPageLifecycle(page, session);
           if (options.bringToFront === true) {
             await page.bringToFront().catch(() => {});
@@ -326,7 +327,7 @@ export class BrowserAutomationAdapter extends EventEmitter {
           return false;
         }
       });
-      if (blankPage) {
+      if (blankPage && (!options.automationOwned || this.isTabAutomationOwned(blankPage))) {
         targetPage = blankPage;
       }
     }
@@ -481,9 +482,15 @@ export class BrowserAutomationAdapter extends EventEmitter {
     } catch {
       return false;
     }
+    // URL routing does not require a responsive page execution context.
+    if (typeof predicate === 'string' && url.includes(predicate)) return true;
+    if (predicate instanceof RegExp && predicate.test(url)) return true;
     try {
       if (typeof (page as any).title === 'function') {
-        title = await page.title().catch(() => '');
+        let titleTimer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          title = await Promise.race([page.title().catch(() => ''), new Promise<string>(resolve => { titleTimer = setTimeout(() => resolve(''), 800); })]);
+        } finally { if (titleTimer) clearTimeout(titleTimer); }
       }
     } catch {
       // Title optional
@@ -608,6 +615,49 @@ export class BrowserAutomationAdapter extends EventEmitter {
     return s && !s.isDisconnecting && s.browser.isConnected() ? s.context : null;
   }
 
+  /** Read-only, scoped to the prompt UI; absent/ambiguous data stays unknown. No account text returned. */
+  public async inspectFlowCreditState(page: Page, expectedModel: string) {
+    // The current Flow UI keeps the selected mode and quote in the settings overlay.
+    // Open only that menu; never select a model, change output count or submit here.
+    let opened = false;
+    const panel = page.locator('flow-prompt-box-settings');
+    const trigger = page.locator('button.settings-trigger-button, button[aria-label="Điều kiện kích hoạt cài đặt"]').first();
+    try {
+      if (!(await panel.isVisible().catch(() => false)) && await trigger.isVisible().catch(() => false)) {
+        await trigger.click({timeout:3000}); opened = true;
+        await panel.waitFor({state:'visible',timeout:3000});
+      }
+      return await page.evaluate((expected) => {
+      const root=document.querySelector('flow-prompt-box, flow-prompt-container, [data-testid="prompt-box"]');
+      const text=root?.textContent||'';
+      const settings=Array.from(document.querySelectorAll('flow-prompt-box-settings')).filter(e=>!!(e as HTMLElement).getClientRects().length);
+      const scope=settings.length===1?settings[0]:root;
+      const controls=scope?Array.from(scope.querySelectorAll('button,[role="radio"][aria-checked="true"],[data-testid="selected-model"],[data-testid="generation-mode"]')).filter(e=>!!(e as HTMLElement).getClientRects().length):[];
+      const modelControls=settings.length===1?controls.filter(e=>/^(Chọn nhóm mô hình|Select model group)$/i.test(e.getAttribute('aria-label')||'')):controls;
+      const modelTexts=[] as string[];
+      for(const e of modelControls){const copy=e.cloneNode(true) as HTMLElement;for(const icon of Array.from(copy.querySelectorAll('mat-icon,.material-icons,.material-symbols-rounded')))icon.remove();modelTexts.push((copy.textContent||'').normalize('NFKC').replace(/^[\s🍌]+/u,'').replace(/\s+/g,' ').trim());}
+      const matches=modelTexts.filter(t=>t===expected.normalize('NFKC').replace(/\s+/g,' ').trim());
+      const model=matches.length===1?expected:null;
+      const selected=controls.filter(e=>e.getAttribute('aria-checked')==='true');
+      const counts=settings.length===1?selected.map(e=>(e.textContent||'').trim()).filter(t=>/^[x×]\s*\d+$/i.test(t)).map(t=>Number(t.replace(/^[x×]\s*/i,''))):[...text.matchAll(/(?:^|\s)[x×]\s*(\d+)(?=\s|$)/gi)].map(m=>Number(m[1]));
+      const modes=selected.map(e=>(e.textContent||'').toLowerCase());
+      const image=modes.some(t=>/image|hình ảnh/.test(t)),video=modes.some(t=>/video/.test(t));
+      const mode=image!==video?(video?'video':'image'):null;
+      const quoteText=settings.length===1?settings[0].textContent||'':text;
+      const prices=[...quoteText.matchAll(/(\d+(?:\.\d+)?)\s*(?:credits|tín dụng)\s*(?:per generation|\/\s*(?:generation|output))/gi)].map(m=>Number(m[1]));
+      if(settings.length===1)for(const m of quoteText.matchAll(/(?:quá trình tạo sẽ tốn|generation will cost|this generation costs)\s*(\d+(?:\.\d+)?)\s*(?:credits|tín dụng)/gi))prices.push(Number(m[1]));
+      const balanceText=document.querySelector('[data-testid="credit-balance"]')?.textContent?.trim();
+      const balance=balanceText&&/^\d+$/.test(balanceText)?Number(balanceText):null;
+      const alerts=Array.from(document.querySelectorAll('[role="alert"],.error-banner')).map(e=>e.textContent||'').join(' ');
+      return {model,outputs:counts.length===1?counts[0]:null,mode,credits:prices.length===1?prices[0]:null,balance,
+        blocked:!!document.querySelector('iframe[src*="bframe"]')||/unusual activity|bất thường|captcha|rate limit|insufficient credits|not enough credits/i.test(alerts),
+        hasReferences:!!root?.querySelector('[data-media-id],flow-reference-chip,[data-asset-id]')};
+      },expectedModel);
+    } finally {
+      if (opened) { await page.keyboard.press('Escape'); await panel.waitFor({state:'hidden',timeout:3000}); }
+    }
+  }
+
   public getActivePage(provider: AutomationProvider): Page | null {
     const s = this.sessions.get(provider);
     if (!s || s.isDisconnecting || !s.browser.isConnected()) return null;
@@ -710,8 +760,8 @@ export class BrowserAutomationAdapter extends EventEmitter {
         state = 'FLOW_LOADING';
         diagnosticMessage = 'Google Flow đang tải tài nguyên hoặc giao diện dự án...';
       } else if (
-        (raw.hasPromptBox || raw.hasGenerateButton || raw.isProjectLoaded || raw.hasDashboardProjects) &&
-        (raw.hasAccount || !raw.hasSignInBtn)
+        raw.hasAccount && !raw.hasSignInBtn &&
+        ((raw.hasPromptBox && raw.hasGenerateButton && !!raw.projectId) || raw.hasDashboardProjects)
       ) {
         state = 'FLOW_READY';
         diagnosticMessage =
@@ -720,7 +770,7 @@ export class BrowserAutomationAdapter extends EventEmitter {
             : 'Google Flow đã đăng nhập thành công trên bảng điều khiển dự án (Dashboard).';
       } else {
         state = 'SESSION_UNVERIFIED';
-        diagnosticMessage = `Không thể xác nhận giao diện Google Flow. URL: ${raw.href.slice(0, 60)}`;
+        diagnosticMessage = 'Chưa đủ bằng chứng UI để xác minh Flow. Không suy đăng nhập từ prompt box hoặc việc không thấy nút đăng nhập.';
       }
 
       return {
@@ -795,7 +845,9 @@ export class BrowserAutomationAdapter extends EventEmitter {
   public async executeFlowGeneration(
     options: FlowGenerationAutomationOptions
   ): Promise<FlowGenerationAutomationResult> {
+    if(options.mode==='image')return runApprovedT2i(this,options);
     const { prompt, projectId, mode, signal } = options;
+    if (options.requireCreditApproval && (!options.beforeSubmit || !projectId)) return {ok:false,state:'FAILED',error:'FLOW_CREDIT_APPROVAL_REQUIRED',errorCode:'FLOW_CREDIT_APPROVAL_REQUIRED'};
     const isVideo = mode === 'video';
     const submissionTimeoutMs = options.submissionTimeoutMs || 6000;
     const processingTimeoutMs = options.timeoutMs || (isVideo ? 120000 : 40000);
@@ -830,6 +882,7 @@ export class BrowserAutomationAdapter extends EventEmitter {
       page = await this.getOrCreateTab('flow', {
         targetUrl,
         bringToFront: options.bringToFront === true,
+        repurposeBlank: false,
         automationOwned: true,
         predicate: (pageOrUrl, title) => {
           const url = typeof pageOrUrl === 'string' ? pageOrUrl : pageOrUrl.url();
@@ -964,8 +1017,9 @@ export class BrowserAutomationAdapter extends EventEmitter {
         if (v.currentSrc) videoUrls.push(v.currentSrc);
         v.querySelectorAll('source').forEach((s: any) => { if (s.src) videoUrls.push(s.src); });
       });
-      return { cardIds, imgUrls, videoUrls, timestamp: Date.now() };
-    }).catch(() => ({ cardIds: [], imgUrls: [], videoUrls: [], timestamp: Date.now() }));
+      return { cardIds, imgUrls, videoUrls, imageTiles:document.querySelectorAll('flow-image-tile').length, videoTiles:document.querySelectorAll('flow-video-tile').length, timestamp: Date.now() };
+    }).catch(() => null);
+    if(!preFlight)return {ok:false,state:'FAILED',error:'FLOW_BASELINE_UNVERIFIED: không có snapshot an toàn; không submit.',errorCode:'FLOW_BASELINE_UNVERIFIED'};
 
     if (signal?.aborted) {
       return { ok: false, state: 'TIMED_OUT', error: 'CANCELLED', errorCode: 'UI_AUTOMATION_FAILED' };
@@ -1038,13 +1092,16 @@ export class BrowserAutomationAdapter extends EventEmitter {
       await pmLocator.waitFor({ state: 'visible', timeout: 8000 });
       await pmLocator.click();
       if (!options.inputImageAsset || !isVideo) {
-        await page.keyboard.press('Control+A');
-        await page.keyboard.press('Backspace');
-        await page.keyboard.type(prompt, { delay: 5 });
+        // keyboard.type sends Enter for newlines: Flow can submit before credit approval.
+        // fill writes multiline content without any Enter key event.
+        await pmLocator.fill(prompt);
       } else {
         await page.keyboard.press('End');
-        await page.keyboard.type(` ${prompt}`, { delay: 5 });
+        await page.keyboard.insertText(` ${prompt}`);
       }
+      const entered=(await pmLocator.innerText()).replace(/\s+/g,' ').trim();
+      const expected=prompt.replace(/\s+/g,' ').trim();
+      if(!expected||(!options.inputImageAsset||!isVideo?entered!==expected:!entered.includes(expected)))throw new Error('FLOW_PROMPT_VERIFICATION_FAILED');
       await page.waitForTimeout(400);
     } catch (typeErr: any) {
       if (String(typeErr?.message || typeErr).includes('STRICT_I2V_PROVENANCE_ERROR')) {
@@ -1055,35 +1112,30 @@ export class BrowserAutomationAdapter extends EventEmitter {
           errorCode: 'UI_AUTOMATION_FAILED',
         };
       }
-      // Fallback to DOM injection
-      await page.evaluate(async ({ promptText }) => {
-        const pm = document.querySelector('.ProseMirror, [contenteditable="true"]') as HTMLElement | null;
-        if (pm) {
-          pm.focus();
-          document.execCommand('selectAll', false, undefined);
-          document.execCommand('delete', false, undefined);
-          document.execCommand('insertText', false, promptText);
-          pm.dispatchEvent(new InputEvent('input', { bubbles: true, data: promptText }));
-        }
-      }, { promptText: prompt }).catch(() => {});
+      return {ok:false,state:'FAILED',error:'FLOW_PROMPT_ENTRY_FAILED: nội dung chưa được xác minh; không submit.',errorCode:'FLOW_PROMPT_ENTRY_FAILED'};
     }
 
     // 6. Click generate button via Playwright trusted click (Stage 1 Part B)
-    const btnSelector = 'flow-generate-icon-button button, button.generate-icon-button, button[aria-label*="Bắt đầu tạo" i], button[aria-label*="tạo" i], button[aria-label*="generate" i]';
+    const btnSelector = 'flow-generate-icon-button button, button.generate-icon-button, button[aria-label="Bắt đầu tạo" i], button[aria-label="Generate" i], button[aria-label="Start generation" i]';
+    const genBtn = page.locator(btnSelector).first();
     try {
-      const genBtn = page.locator(btnSelector).first();
       await genBtn.waitFor({ state: 'visible', timeout: 8000 });
       for (let i = 0; i < 20; i++) {
         const isDis = await genBtn.isDisabled().catch(() => false);
         if (!isDis) break;
         await page.waitForTimeout(200);
       }
+      signal?.throwIfAborted();
+      await options.beforeSubmit?.(page);
+      signal?.throwIfAborted();
+    } catch {
+      return {ok:false,state:'FAILED',error:'FLOW_PRE_SUBMIT_FAILED: điều kiện chưa được xác minh; không click Tạo.',errorCode:'FLOW_PRE_SUBMIT_FAILED'};
+    }
+    try {
       await genBtn.click({ timeout: 5000 });
     } catch {
-      await page.evaluate(() => {
-        const btn = document.querySelector('flow-generate-icon-button button, button.generate-icon-button, button[aria-label*="Bắt đầu tạo" i], button.submit-button') as HTMLButtonElement | null;
-        if (btn) btn.click();
-      }).catch(() => {});
+      // The first click may have reached Google. Never issue another DOM click.
+      return {ok:false,state:'FAILED',error:'FLOW_SUBMISSION_NOT_CONFIRMED: giữ receipt và đối soát; không tự click lại.',errorCode:'FLOW_SUBMISSION_NOT_CONFIRMED'};
     }
 
     // 7. Verification of submission (< 6s)
@@ -1095,7 +1147,7 @@ export class BrowserAutomationAdapter extends EventEmitter {
       }
       await new Promise((r) => setTimeout(r, 300));
 
-      const subStatus = await page.evaluate(() => {
+      const subStatus = await page.evaluate(({imageTiles,videoTiles,isVideo}) => {
         const captchaIframe = document.querySelector('iframe[src*="bframe"], .g-recaptcha-bubble-arrow');
         if (captchaIframe) return { accepted: false, blocked: true };
 
@@ -1106,10 +1158,12 @@ export class BrowserAutomationAdapter extends EventEmitter {
         });
         if (botToast) return { accepted: false, blocked: true };
 
-        const spinner = !!document.querySelector('mat-progress-spinner, mat-spinner, flow-loading-indicator');
+        const spinner = !!document.querySelector('mat-progress-spinner, mat-spinner, flow-loading-indicator,[role="progressbar"]');
+        const newTile=document.querySelectorAll(isVideo?'flow-video-tile':'flow-image-tile').length>(isVideo?videoTiles:imageTiles);
+        const progress=Array.from(document.querySelectorAll('flow-grid-tile-container')).some(e=>/(?:^|\s)\d{1,3}%/.test(e.textContent||''));
         const pmText = document.querySelector('.ProseMirror')?.textContent?.trim() || '';
-        return { accepted: spinner || pmText === '', blocked: false };
-      }).catch(() => ({ accepted: false, blocked: false }));
+        return { accepted: spinner || newTile || progress || pmText === '', blocked: false };
+      },{imageTiles:preFlight.imageTiles,videoTiles:preFlight.videoTiles,isVideo}).catch(() => ({ accepted: false, blocked: false }));
 
       if (subStatus.blocked) {
         return {
@@ -1180,7 +1234,10 @@ export class BrowserAutomationAdapter extends EventEmitter {
               }
             }
 
-            const isParentGenerating = (el: Element) => {
+            const existingImgSet = new Set(existingImgsArr);
+            const existingVideoSet = new Set(existingVideosArr);
+            const existingCardSet = new Set(existingCardIdsArr);
+            const helpers = {isParentGenerating(el: Element) {
               const card = el.closest(
                 'flow-grid-tile-container, flow-tile-container, flow-image-tile, flow-video-tile, flow-asset-card, flow-media-tile, mat-card, [data-asset-id], .asset-item'
               );
@@ -1189,14 +1246,10 @@ export class BrowserAutomationAdapter extends EventEmitter {
                 !!card.querySelector('mat-progress-spinner, mat-spinner, flow-loading-indicator, .loading') ||
                 card.classList.contains('generating')
               );
-            };
-
-            const existingImgSet = new Set(existingImgsArr);
-            const existingVideoSet = new Set(existingVideosArr);
-            const existingCardSet = new Set(existingCardIdsArr);
+            },
 
             // Card correlation helper: validates card relevance via explicit aria-label/title if present
-            const correlatesWithPrompt = (card: Element | null): boolean => {
+            correlatesWithPrompt(card: Element | null): boolean {
               if (!card || keywords.length === 0) return true;
               const ariaLabel = (card.getAttribute('aria-label') || '').toLowerCase();
               const title = (card.getAttribute('title') || '').toLowerCase();
@@ -1205,7 +1258,7 @@ export class BrowserAutomationAdapter extends EventEmitter {
                 return keywords.some((kw: string) => haystack.includes(kw));
               }
               return true;
-            };
+            }};
 
             if (targetMode === 'IMAGE') {
               const imgs = Array.from(
@@ -1235,7 +1288,7 @@ export class BrowserAutomationAdapter extends EventEmitter {
                 const isDecentSize =
                   (im.naturalWidth >= 200 && im.naturalHeight >= 200) || (im.width >= 180 && im.height >= 180);
 
-                return isValid && isNotIcon && isDecentSize && !isParentGenerating(im) && correlatesWithPrompt(card);
+                return isValid && isNotIcon && isDecentSize && !helpers.isParentGenerating(im) && helpers.correlatesWithPrompt(card);
               });
 
               if (target) {
@@ -1270,7 +1323,7 @@ export class BrowserAutomationAdapter extends EventEmitter {
                 const cardId = card?.getAttribute('data-asset-id') || card?.getAttribute('data-id') || card?.id;
                 if (cardId && existingCardSet.has(cardId)) return false;
 
-                return !isParentGenerating(v) && correlatesWithPrompt(card);
+                return !helpers.isParentGenerating(v) && helpers.correlatesWithPrompt(card);
               });
 
               if (target) {
@@ -1297,7 +1350,7 @@ export class BrowserAutomationAdapter extends EventEmitter {
                 if (!h || existingVideoSet.has(h)) return false;
                 const card = a.closest('flow-grid-tile-container, flow-tile-container, flow-video-tile, mat-card');
                 return (h.includes('flow-content.google') || h.includes('storage.googleapis.com') || h.includes('googlevideo') || h.startsWith('blob:') || h.includes('/asb/')) &&
-                  !isParentGenerating(a) && correlatesWithPrompt(card);
+                  !helpers.isParentGenerating(a) && helpers.correlatesWithPrompt(card);
               });
               if (targetLink && targetLink.href) {
                 const card = targetLink.closest('flow-grid-tile-container, flow-tile-container, flow-video-tile, [data-asset-id]');

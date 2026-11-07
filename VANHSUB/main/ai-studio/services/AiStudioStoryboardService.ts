@@ -1331,8 +1331,8 @@ export class AiStudioStoryboardService {
               clusteredScenes = llmScenes;
             }
           }
-        } catch (llmErr) {
-          console.warn('[AiStudioStoryboardService] Tier 1 LLM clustering failed, falling back to Tier 2 Greedy Fallback:', llmErr);
+        } catch {
+          throw new Error('LLM không tạo được storyboard hợp lệ. Giữ nguyên script/audio/timing; không tự thay bằng phân cảnh mẫu.');
         }
       }
 

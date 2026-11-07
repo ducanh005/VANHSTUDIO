@@ -136,7 +136,7 @@ export class DubbingRunner {
             return;
           }
           TaskStore.update(taskId, {
-            progress: percent,
+            progress: Math.max(TaskStore.getById(taskId)?.progress || 0, Math.min(97, Math.round(percent * 0.97))),
             stageDescription: `Đang xử lý dubbing (${percent}%)...`,
           });
           onUpdate?.();

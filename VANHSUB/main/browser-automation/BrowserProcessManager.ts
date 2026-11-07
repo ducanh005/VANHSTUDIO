@@ -6,7 +6,7 @@
  * 2. Multi-Profile Directory Isolation (chrome_flow_profile vs chrome_chatgpt_profile vs chrome_generic_profile).
  * 3. Dedicated Ports: 9223 for ChatGPT, 9224 for Flow CDP, with liveness checking via /json/version.
  * 4. Strict Port 9222 Collision Guard (Number coercion enforcing 9222 reservation for FlowBridgeServer).
- * 5. Anti-Bot Stealth Configuration (--disable-blink-features=AutomationControlled, --headless=new, etc.).
+ * 5. Standard Chrome process arguments without identity masking.
  * 6. Windows Process Tree Elimination (taskkill /pid <PID> /T /F) and Stale SingletonLock Sanitization.
  * 7. Active Process Registry with graceful shutdown hooks.
  */
@@ -457,7 +457,7 @@ export class BrowserProcessManager {
    * - Port 9222 guard check via validatePort
    * - Reuses alive instances on target port without redundant spawn
    * - Cleans stale profile lockfiles
-   * - Assembles stealth args (--disable-blink-features=AutomationControlled, etc.)
+   * - Assembles standard isolated-profile arguments
    * - Spawns detached process with unref()
    * - Polls /json/version up to timeoutMs (default 15000ms)
    * - Auto-kills spawned tree on timeout
@@ -507,7 +507,7 @@ export class BrowserProcessManager {
     // Step 4: Detect Chrome executable binary
     const chromePath = this.detectChromePath(options.executablePath);
 
-    // Step 5: Assemble stealth anti-bot arguments
+    // Step 5: Assemble ordinary Chromium arguments
     const width = options.windowSize?.width ?? 1280;
     const height = options.windowSize?.height ?? 800;
 
@@ -515,10 +515,8 @@ export class BrowserProcessManager {
       `--remote-debugging-port=${effectivePort}`,
       '--remote-debugging-address=127.0.0.1',
       `--user-data-dir=${profileDir}`,
-      '--disable-blink-features=AutomationControlled',
       '--no-first-run',
       '--no-default-browser-check',
-      '--password-store=basic',
       '--disable-features=Translate,OptimizationHints,MediaRouter',
       `--window-size=${width},${height}`,
     ];

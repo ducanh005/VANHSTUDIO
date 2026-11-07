@@ -1,8 +1,11 @@
 import { selectVisualJobs } from './visualJobs';
 import { applySceneMedia } from './sceneArtifacts';
+import { parseSrtStrict } from '../lib/srt';
+import type { StartManualMediaPayload } from './types';
 import { fullDecodeMediaWithFfmpeg } from '../browser-automation/mediaValidator';
 import { toStoredScriptScenes } from './scriptStorage';
 import { invalidateSessionArtifacts } from './sessionArtifacts';
+import { assertUsableScript } from '../../shared/aiStudioScript';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -44,6 +47,12 @@ import { aiStudioVisualService } from './services/AiStudioVisualService';
 import { aiStudioVideoAssembler } from './services/AiStudioVideoAssembler';
 import { AiStudioDiskStorageManager } from './storage/AiStudioDiskStorageManager';
 import { captureSessionConfig, resolveProductionConfig, restoreSessionConfig } from './sessionConfig';
+import { assertStudioLlmReady } from './llmReadiness';
+import { stageApprovalIssue } from '../../shared/studioStageReadiness';
+import { applyScriptLines } from './sessionArtifacts';
+import {prepareOfficialMedia,runOfficialMediaStage} from './officialMediaStage';
+import {studioMediaReadiness} from '../../shared/officialMediaConfig';
+import {flowCreditReadiness} from '../../shared/flowCreditPolicy';
 import { cancelSessionOperation, isSessionOperationActive, registerSessionProcess, reserveSessionOperation, withSessionOperation } from './sessionOperations';
 import {
   assertSessionWorkspaceOwner,
@@ -294,6 +303,18 @@ export class AiStudioPipelineEngine implements IAiStudioPipelineEngineDelegate {
     return this.resolveSessionConfig(session);
   }
 
+  public async getMediaReadiness(sessionId?:string) {
+    if(!sessionId){const config=getDecryptedAiStudioConfig();return config.flowEngine.engine==='official_api'||config.flowEngine.engine==='manual'?studioMediaReadiness(config.flowEngine,config.activeProjectId):flowCreditReadiness(config.flowEngine,config.activeProjectId);}
+    const session=await this.getState({sessionId});if(!session)throw new Error('Không tìm thấy episode.');
+    if(session.manualMode)return {status:'BLOCKED',route:'manual',liveVerified:false,reasons:['Episode nhập thủ công: không gọi provider generation.']};
+    const config=this.resolveSessionConfig(session);
+          if(config.flowEngine.engine!=='official_api')return flowCreditReadiness(config.flowEngine,session.ownerProjectId||session.projectId,selectVisualJobs(session.artifacts.scenes||[]).length);
+      const base=studioMediaReadiness(config.flowEngine,session.ownerProjectId||session.projectId);
+    if(base.status!=='CONFIGURATION_READY')return base;
+    try{const plan=await prepareOfficialMedia(session,config,this.getDiskStorageManager(sessionId));return {...base,requestsNeeded:plan.needed,requestsUsed:plan.used};}
+    catch(error){const message=error instanceof Error?error.message:'Preflight thất bại.';return{...base,status:message.startsWith('UNSUPPORTED')?'UNSUPPORTED':message.startsWith('BLOCKED')?'BLOCKED':'FAILED',reasons:[message]};}
+  }
+
   private resolveSessionConfig(session: PipelineSessionState): AiStudioConfig {
     const current = getDecryptedAiStudioConfig();
     let owner = current.savedProjects?.find((p) => p.id === session.ownerProjectId);
@@ -352,6 +373,46 @@ export class AiStudioPipelineEngine implements IAiStudioPipelineEngineDelegate {
   // ==========================================================================
   // Pipeline Start (Auto-Pilot One-Click Mode)
   // ==========================================================================
+  /** Create a real manually authored episode from selected, validated artifacts; no AI calls. */
+  public async startManualMedia(payload: StartManualMediaPayload): Promise<StartPipelineResult> {
+    const config = getDecryptedAiStudioConfig();
+    const project = config.savedProjects?.find(p => p.id === payload.projectId);
+    if (!project || config.activeProjectId !== project.id || !project.outputDir) throw new Error('Mở đúng project có thư mục output trước khi nhập SRT/audio.');
+    if (!fs.statSync(payload.srtPath).isFile() || fs.statSync(payload.srtPath).size > 4 * 1024 * 1024 || path.extname(payload.srtPath).toLowerCase() !== '.srt') throw new Error('SRT không hợp lệ hoặc quá lớn.');
+    if (!['.mp3', '.wav', '.m4a', '.flac', '.aac', '.ogg'].includes(path.extname(payload.audioPath).toLowerCase())) throw new Error('Loại audio không hỗ trợ.');
+    const cues = parseSrtStrict(fs.readFileSync(payload.srtPath, 'utf8'));
+    if (!cues.length || cues.length > 1000 || cues.some((c, i) => c.startMs < 0 || c.endMs <= c.startMs || (i > 0 && c.startMs < cues[i-1].endMs))) throw new Error('SRT cần 1–1000 câu có timing hợp lệ, không chồng lấn.');
+    const decoded = await fullDecodeMediaWithFfmpeg(payload.audioPath);
+    if (!decoded.fullyDecoded) throw new Error('Audio không giải mã đầy đủ được; từ chối nhập.');
+    const duration = await aiStudioVideoAssembler.probeDuration(payload.audioPath);
+    if (Math.abs(duration * 1000 - cues[cues.length-1].endMs) > 750) throw new Error('Audio và điểm kết thúc SRT chênh quá 750ms. Hãy đồng bộ trước khi nhập.');
+    // Recheck project after asynchronous media validation, before allocating output.
+    if (getDecryptedAiStudioConfig().activeProjectId !== project.id) throw new Error('Project đang chọn đã thay đổi.');
+    const sessionId = `manual-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+    const workspaceDir = newSessionWorkspace(project.outputDir, sessionId);
+    const storage = new AiStudioDiskStorageManager(sessionId, { baseDir: workspaceDir, exactProjectDir: true });
+    const audioPath = path.join(storage.paths.voiceDir, 'narration' + path.extname(payload.audioPath).toLowerCase());
+    fs.copyFileSync(payload.audioPath, audioPath, fs.constants.COPYFILE_EXCL);
+    const srtPath = path.join(storage.paths.timingDir, 'manual.srt');
+    fs.copyFileSync(payload.srtPath, srtPath, fs.constants.COPYFILE_EXCL);
+    const scriptLines = cues.map((cue, index) => ({ id: `line_${index+1}`, index: index+1, text: cue.text, startMs: cue.startMs, endMs: cue.endMs, durationMs: cue.endMs-cue.startMs }));
+    const scenes: StoryboardScene[] = cues.map((cue, index) => ({
+      id: `scene_${index+1}_shot_1`, shotId: `scene_${index+1}_shot_1`, sceneId: `scene_${index+1}`, lineIndex: index,
+      startMs: index ? cues[index-1].endMs : 0, endMs: cue.endMs, durationMs: cue.endMs-(index ? cues[index-1].endMs : 0),
+      lineText: cue.text, visualPrompt: '', motionType: 'ken_burns', status: 'pending', manualMediaOnly: true,
+    }));
+    const state: PipelineSessionState = {
+      sessionId, manualMode: true, ownerProjectId: project.id, topic: 'Storyboard thủ công từ SRT', currentStage: 5,
+      stageName: 'storyboard', status: 'awaiting_approval', progress: 62.5, gatedMode: true,
+      outputDir: project.outputDir, workspaceDir, mediaDir: storage.paths.mediaDir, configSnapshot: captureSessionConfig(config),
+      stages: Object.fromEntries(Array.from({ length:8 }, (_,i) => [i+1,{ status: i===7 ? 'skipped' : i<5 ? 'success' : 'pending', stageName: STAGE_CONFIG[(i+1) as AiStudioStageId].label }])),
+      artifacts: { audioPath, srtPath, scriptLines, scenes, alignmentSource: 'estimated_per_line' }, createdAt: Date.now(), updatedAt: Date.now(),
+    };
+    storage.saveScript({ scenes: toStoredScriptScenes(scriptLines) });
+    this.persistSessionStateAtomic(state);
+    return { sessionId };
+  }
+
   public async start(
     payload: StartPipelinePayload,
     onProgress: (event: PipelineProgressEvent) => void
@@ -365,6 +426,7 @@ export class AiStudioPipelineEngine implements IAiStudioPipelineEngineDelegate {
       throw new Error('Dự án đang chọn đã thay đổi. Mở lại đúng dự án trước khi bắt đầu để tránh dùng nhầm cấu hình.');
     }
     const config = resolveProductionConfig(currentConfig, payload.options, payload.blueprint);
+    assertStudioLlmReady(config);
     const activeProject = config.savedProjects?.find((p) => p.id === config.activeProjectId);
     const resolvedOutputDir =
       payload.outputDir?.trim() ||
@@ -458,16 +520,34 @@ export class AiStudioPipelineEngine implements IAiStudioPipelineEngineDelegate {
       if (!session) {
         throw new Error(`Session không tồn tại: ${payload.sessionId}`);
       }
+      if (session.manualMode) throw new Error('Phiên thủ công: nhập media cho scene và dùng Xuất video thủ công; không chạy provider tự động.');
       if (!Number.isInteger(payload.currentStage) || payload.currentStage !== session.currentStage ||
           session.status !== 'awaiting_approval' || session.stages[session.currentStage]?.status !== 'success') {
         throw new Error('Chỉ được duyệt bước hiện tại đã hoàn tất và đang chờ duyệt.');
       }
 
+      if (payload.currentStage === 2) {
+        assertUsableScript({ ...session.artifacts, ...payload.updatedArtifacts }.scriptLines);
+      }
+      if ([1, 4, 7].includes(payload.currentStage)) assertStudioLlmReady(this.resolveSessionConfig(session));
+      const candidate = { ...session, artifacts: { ...session.artifacts, ...payload.updatedArtifacts } };
+      const issue = stageApprovalIssue(candidate);
+      if (issue) throw new Error(issue);
+      if (payload.currentStage === 3 || payload.currentStage === 7) {
+        const file = payload.currentStage === 3 ? candidate.artifacts.audioPath : candidate.artifacts.videoPath;
+        if (!file || !fs.existsSync(file) || !fs.statSync(file).isFile() || !fs.statSync(file).size) throw new Error('Media đã duyệt không còn tồn tại.');
+      }
+      if (payload.currentStage === 6) {
+        for (const scene of candidate.artifacts.scenes || []) {
+          const file = scene.assetPath || scene.videoPath || scene.imagePath;
+          if (!file || !fs.existsSync(file) || !fs.statSync(file).isFile() || !fs.statSync(file).size) throw new Error('Media của scene không còn hợp lệ.');
+        }
+      }
       if (payload.updatedArtifacts) {
-        session.artifacts = {
-          ...session.artifacts,
-          ...payload.updatedArtifacts,
-        };
+        if (payload.currentStage !== 2 || Object.keys(payload.updatedArtifacts).some(key => key !== 'scriptLines')) {
+          throw new Error('Duyệt stage không được thay đường dẫn artifact. Hãy dùng chức năng sửa/nhập tương ứng.');
+        }
+        applyScriptLines(session, payload.updatedArtifacts.scriptLines!);
       }
 
       const nextStage = (payload.currentStage + 1) as AiStudioStageId;
@@ -514,6 +594,7 @@ export class AiStudioPipelineEngine implements IAiStudioPipelineEngineDelegate {
         throw new Error(`Session không tồn tại: ${payload.sessionId}`);
       }
 
+      if (session.manualMode) throw new Error('Phiên thủ công chỉ nhập media và xuất video; không chạy provider tự động.');
       session.stages = session.stages || ({} as any);
       session.artifacts = session.artifacts || ({} as any);
 
@@ -537,6 +618,9 @@ export class AiStudioPipelineEngine implements IAiStudioPipelineEngineDelegate {
         selectVisualJobs(session.artifacts.scenes || [], payload.mode, payload.selectedShotIds);
       }
 
+      if (targetStage === 3) assertUsableScript(session.artifacts.scriptLines);
+      if ([1, 2, 5, 8].includes(targetStage)) assertStudioLlmReady(this.resolveSessionConfig(session));
+
       if (payload.storyboardOptions) {
         if (targetStage !== 5) throw new Error('Thay đổi cách phân cảnh phải chạy lại từ Bước 5.');
         const { shotMode, granularity } = payload.storyboardOptions;
@@ -550,6 +634,12 @@ export class AiStudioPipelineEngine implements IAiStudioPipelineEngineDelegate {
         } });
       }
 
+      if(targetStage===6&&this.resolveSessionConfig(session).flowEngine.engine==='official_api'&&payload.mode&&payload.mode!=='resume_missing'){
+        const config=this.resolveSessionConfig(session),candidate=structuredClone(session);
+        for(const scene of selectVisualJobs(candidate.artifacts.scenes||[],payload.mode,payload.selectedShotIds))scene.officialGenerationNonce=crypto.randomUUID();
+        await prepareOfficialMedia(candidate,config,this.getDiskStorageManager(session.sessionId),payload.mode,payload.selectedShotIds,lease.controller.signal);
+        session.artifacts.scenes=candidate.artifacts.scenes;
+      }
       invalidateSessionArtifacts(session, targetStage);
 
       session.status = 'running';
@@ -711,6 +801,7 @@ export class AiStudioPipelineEngine implements IAiStudioPipelineEngineDelegate {
               config.channelProfile
             );
             signal.throwIfAborted();
+            assertUsableScript(scriptLines);
             session.artifacts.scriptLines = scriptLines;
             try {
               const evaluation = await aiStudioLlmService.evaluateScript(
@@ -745,17 +836,21 @@ export class AiStudioPipelineEngine implements IAiStudioPipelineEngineDelegate {
             // Stage 3: Lồng tiếng (Edge-TTS Voiceover)
             const voiceoverPath = path.join(assetsDir, 'voiceover.mp3');
             const scriptLines = session.artifacts.scriptLines || [];
+            assertUsableScript(scriptLines);
 
             // Ưu tiên giọng đọc cụ thể và provider trong ChannelProfile nếu đã cấu hình
-            const isTikTok =
-              config.channelProfile?.ttsEngine === 'tiktok_tts' ||
-              config.voice.provider === 'tiktok_tts' ||
-              Boolean(config.channelProfile?.specificVoice?.startsWith('BV0'));
-            const defaultVoice = isTikTok ? 'BV074_streaming' : 'vi-VN-HoaiMyNeural';
+            const isKokoro = config.channelProfile?.ttsEngine === 'kokoro_tts' ||
+              (!config.channelProfile?.ttsEngine && config.voice.provider === 'local_onnx');
+            const isPiper = config.channelProfile?.ttsEngine === 'piper_local' ||
+              (!config.channelProfile?.ttsEngine && config.voice.provider === 'piper_local');
+            const isTikTok = config.channelProfile?.ttsEngine
+              ? config.channelProfile.ttsEngine === 'tiktok_tts'
+              : config.voice.provider === 'tiktok_tts';
+            const defaultVoice = isPiper ? 'vi_VN-vais1000-medium' : isKokoro ? 'af_heart' : isTikTok ? 'BV074_streaming' : 'vi-VN-HoaiMyNeural';
 
             const voiceConfig: AiStudioVoiceConfig = {
               ...config.voice,
-              provider: isTikTok ? 'tiktok_tts' : (config.voice.provider || 'edge_tts'),
+              provider: isPiper ? 'piper_local' : isKokoro ? 'local_onnx' : isTikTok ? 'tiktok_tts' : 'edge_tts',
               voiceId: config.channelProfile?.specificVoice || config.voice.voiceId || defaultVoice,
             };
 
@@ -978,6 +1073,7 @@ export class AiStudioPipelineEngine implements IAiStudioPipelineEngineDelegate {
                   durationMs,
                   lineText,
                   visualPrompt: shot.image_prompt,
+                  motionPrompt: shot.motion_note,
                   negativePrompt: config.flowEngine.negativePrompt || 'blurry, low quality, distorted, watermark, no text, no subtitles, no speech bubbles, no words, clean visual illustration',
                   motionType,
                   status: 'pending',
@@ -1018,6 +1114,15 @@ export class AiStudioPipelineEngine implements IAiStudioPipelineEngineDelegate {
           }
 
           case 6: {
+            if(config.flowEngine.engine==='official_api'){
+              await runOfficialMediaStage(session,config,storage,signal,()=>this.persistSessionStateAtomic(session),runOptions?.mode,runOptions?.selectedShotIds,pct=>onProgress({sessionId:session.sessionId,stage:6,stageName:STAGE_CONFIG[6].label,progress:pct,status:'running',message:'Đang tạo/kiểm định media qua Official API.',artifacts:session.artifacts}));
+              if(selectVisualJobs(session.artifacts.scenes||[]).length)throw new Error('OFFICIAL_MEDIA_INCOMPLETE: còn scene thiếu media hợp lệ.');
+              session.progress=85;break;
+            }
+            if(config.flowEngine.engine==='manual'){
+              if(selectVisualJobs(session.artifacts.scenes||[]).length)throw new Error('BLOCKED: đã chọn Manual Import. Nhập ảnh/video vào từng scene; không gọi provider.');
+              session.progress=85;break;
+            }
             // Stage 6: Ảnh / Video (Visual Assets via Google Flow Pure Web RPC mặc định)
             const isLegacyDom = config.flowEngine.engine === 'dom' || config.flowEngine.engine === 'legacy_dom';
             const isRpcEngine = !isLegacyDom;
@@ -1060,6 +1165,9 @@ export class AiStudioPipelineEngine implements IAiStudioPipelineEngineDelegate {
                 break;
               }
 
+              const flowReady=flowCreditReadiness(config.flowEngine,session.ownerProjectId||session.projectId,jobs.length);
+              if(flowReady.status!=='CONFIGURATION_READY')throw new Error('FLOW_CREDITS_BLOCKED: '+flowReady.reasons.join(' '));
+              for(const sc of scenes)if(sc.mediaProvenance?.source==='google_flow_ui'&&(!sc.assetPath||!fs.existsSync(sc.assetPath)||crypto.createHash('sha256').update(fs.readFileSync(sc.assetPath)).digest('hex')!==sc.mediaProvenance.sha256))throw new Error('FLOW_ARTIFACT_INTEGRITY_FAILED');
               const targetVisualDir = storage.paths.mediaDir || assetsDir;
 
               const onSceneComplete = async (completedScene: StoryboardScene, idx: number) => {
@@ -1122,7 +1230,7 @@ export class AiStudioPipelineEngine implements IAiStudioPipelineEngineDelegate {
                 activeProject?.flowProjectUrl ||
                 (config.flowEngine?.projectId && config.flowEngine.projectId.trim() ? config.flowEngine.projectId : undefined)
               );
-              if (FlowBridgeServer.getInstance().isConnected()) {
+              if (!['playwright','browser_automation'].includes(config.flowEngine.engine||'') && FlowBridgeServer.getInstance().isConnected()) {
                 if (signal?.aborted) throw new Error('Tác vụ đã bị huỷ.');
                 // Nếu session và activeProject chưa liên kết cụ thể, kiểm tra xem Chrome có đang mở sẵn 1 project Flow không
                 if (!targetFlowProjectId) {
@@ -1177,6 +1285,8 @@ export class AiStudioPipelineEngine implements IAiStudioPipelineEngineDelegate {
               const effectiveFlowEngineConfig: AiStudioFlowEngineConfig = {
                 ...config.flowEngine,
                 projectId: targetFlowProjectId || undefined,
+                flowReceiptDir:path.join(session.workspaceDir!,'.flow-receipts'),
+                flowCreditProjectId:session.ownerProjectId||session.projectId,
                 generationNonce: runOptions?.mode && runOptions.mode !== 'resume_missing' ? crypto.randomUUID() : undefined,
               };
 
@@ -1738,7 +1848,7 @@ export class AiStudioPipelineEngine implements IAiStudioPipelineEngineDelegate {
 
           case 7: {
             // Stage 7: Dựng phim (FFmpeg Assembly)
-            const finalVideoPath = path.join(assetsDir, 'final_video.mp4');
+            const finalVideoPath = path.join(assetsDir, `final_video_${crypto.randomUUID()}.mp4`);
             const scenes = session.artifacts.scenes || [];
             const audioPath = session.artifacts.audioPath!;
 
@@ -1858,12 +1968,19 @@ export class AiStudioPipelineEngine implements IAiStudioPipelineEngineDelegate {
     return aiStudioTtsService.renderSingleLineVoice(payload);
   }
 
+  private blockUnapprovedFlowRegeneration(): void {
+    throw new Error('FLOW_REGENERATION_REQUIRES_NEW_APPROVAL: tạo job/episode mới để duyệt credit; không vượt receipt hoặc sửa snapshot cũ.');
+  }
+
   public async regenerateSceneAsset(
     payload: RegenerateSceneAssetPayload,
     onProgress?: (pct: number, msg: string) => void,
     signal?: AbortSignal
   ): Promise<RegenerateSceneAssetResult> {
-    if (!payload.sessionId) return this.regenerateSceneAssetInternal(payload, onProgress, signal);
+    if (!payload.sessionId) {
+      if(payload.flowConfig?.engine==='official_api'||getDecryptedAiStudioConfig().flowEngine.engine==='official_api')throw new Error('OFFICIAL_SESSION_REQUIRED: generation phải thuộc episode và scene cụ thể.');
+      throw new Error('FLOW_SESSION_REQUIRED: generation cần episode và quyền credit riêng; không nhận receipt path từ renderer.');
+    }
     return withSessionOperation(payload.sessionId, (jobSignal) => this.regenerateSceneAssetInternal(
       payload, onProgress, signal ? AbortSignal.any([signal, jobSignal]) : jobSignal
     ));
@@ -1877,12 +1994,27 @@ export class AiStudioPipelineEngine implements IAiStudioPipelineEngineDelegate {
     if (payload.sessionId) {
       const ownerSession = await this.getState({ sessionId: payload.sessionId });
       signal?.throwIfAborted();
+      if (ownerSession?.manualMode) throw new Error('Phiên thủ công không gọi provider tạo media; hãy nhập ảnh/video từ máy.');
       if (!ownerSession) throw new Error('Không tìm thấy phiên AI Studio để tạo lại media.');
       if (!ownerSession.artifacts.scenes?.some(scene => scene.id === payload.sceneId || scene.shotId === payload.sceneId)) throw new Error('Phân cảnh không tồn tại trong phiên này.');
       if (!/^[\w-]+$/.test(payload.sceneId)) throw new Error('ID phân cảnh không hợp lệ.');
       // Ownership failures must not be swallowed by the legacy provider fallback.
       const storage = this.getDiskStorageManager(payload.sessionId, ownerSession.mediaDir);
       const config = this.resolveSessionConfig(ownerSession);
+      if(config.flowEngine.engine==='manual')throw new Error('Manual Import không gọi generation; hãy chọn media từ máy.');
+      if(config.flowEngine.engine==='official_api'){
+        if(payload.mode==='both')throw new Error('UNSUPPORTED: Official API cần chọn Ảnh hoặc Video rõ ràng; I2V dùng keyframe đã nhập.');
+        const candidate=structuredClone(ownerSession),target=candidate.artifacts.scenes!.find(s=>s.id===payload.sceneId||s.shotId===payload.sceneId)!;
+        target.motionType=payload.mode==='image'?'ken_burns':'video';target.visualPrompt=payload.visualPrompt||target.visualPrompt;
+        target.officialGenerationNonce=crypto.randomUUID();
+        await prepareOfficialMedia(candidate,config,storage,'regenerate_selected',[payload.sceneId],signal);signal?.throwIfAborted();
+        candidate.configSnapshot=captureSessionConfig(config);this.persistSessionStateAtomic(candidate);
+        await runOfficialMediaStage(candidate,config,storage,signal||new AbortController().signal,()=>this.persistSessionStateAtomic(candidate),'regenerate_selected',[payload.sceneId],pct=>onProgress?.(pct,'Official API'));
+        const missing=selectVisualJobs(candidate.artifacts.scenes||[]).length>0;
+        candidate.currentStage=missing?5:6;candidate.stageName=missing?'storyboard':'visuals';candidate.status='awaiting_approval';candidate.stages[candidate.currentStage]={status:'success',stageName:STAGE_CONFIG[candidate.currentStage].label};this.persistSessionStateAtomic(candidate);
+        return {imagePath:target.imagePath,videoPath:target.videoPath,assetPath:target.assetPath!};
+      }
+      this.blockUnapprovedFlowRegeneration();
       try {
         const shotId = payload.sceneId;
         const sceneId = shotId.includes('_shot_') ? shotId.split('_shot_')[0] : shotId;
@@ -2236,6 +2368,7 @@ export class AiStudioPipelineEngine implements IAiStudioPipelineEngineDelegate {
       // Tạo đường dẫn phiên bản mới trong thư mục media
       const nextVer = storage.getNextMediaVersion(shotId, targetKind);
       let destPath = nextVer.absolutePath;
+      const digest = crypto.createHash('sha256');
 
       // Copy tệp vào thư mục media của session
       fs.copyFileSync(filePath, destPath);
@@ -2243,6 +2376,7 @@ export class AiStudioPipelineEngine implements IAiStudioPipelineEngineDelegate {
       try {
         destPath = await aiStudioVisualService.validateMediaFile(destPath, isVideo ? 'video' : 'image', { fullDecode: true });
         if (fs.statSync(destPath).size < 512) await fullDecodeMediaWithFfmpeg(destPath);
+        for await (const chunk of fs.createReadStream(destPath)) { signal.throwIfAborted(); digest.update(chunk); }
         signal.throwIfAborted();
       } catch (error) {
         // Only discard the new failed candidate, never the user's source or prior versions.
@@ -2256,6 +2390,7 @@ export class AiStudioPipelineEngine implements IAiStudioPipelineEngineDelegate {
         throw error;
       }
       const relativePath = path.relative(storage.paths.projectDir, destPath).replace(/\\/g, '/');
+      const provenance = { source: 'manual_import' as const, assetPath: destPath, sha256: digest.digest('hex'), importedAt: new Date().toISOString(), sessionId, sceneId: shotId, projectId: ownerSession.ownerProjectId || ownerSession.projectId, automaticGeneration: false as const };
 
       // Cập nhật index.json
       if (isVideo) {
@@ -2289,7 +2424,9 @@ export class AiStudioPipelineEngine implements IAiStudioPipelineEngineDelegate {
       if (session && session.artifacts.scenes) {
         const targetScene = session.artifacts.scenes.find((s) => s.id === shotId || s.shotId === shotId);
         if (targetScene) {
-          applySceneMedia(session, shotId, { imagePath: isVideo ? undefined : destPath, videoPath: isVideo ? destPath : undefined });
+          const keepI2V=!isVideo&&!session.manualMode&&targetScene.motionType==='video'&&this.resolveSessionConfig(session).flowEngine.engine==='official_api'&&this.resolveSessionConfig(session).flowEngine.officialVideoMode==='i2v';
+          applySceneMedia(session, shotId, { imagePath: isVideo ? undefined : destPath, videoPath: isVideo ? destPath : undefined, provenance });
+          if(keepI2V){targetScene.motionType='video';targetScene.status='pending';session.currentStage=5;session.stageName='storyboard';session.status='awaiting_approval';session.stages[5]={status:'success',stageName:STAGE_CONFIG[5].label};session.stages[6]={status:'pending',stageName:STAGE_CONFIG[6].label};}
           if (isVideo) targetScene.originalMediaDurationSec = await aiStudioVideoAssembler.probeDuration(destPath);
           this.persistSessionStateAtomic(session);
         }
@@ -2311,11 +2448,30 @@ export class AiStudioPipelineEngine implements IAiStudioPipelineEngineDelegate {
     return withSessionOperation(payload.sessionId, (signal) => this.renderVideoInternal(payload, signal));
   }
 
+  public async saveManualSeo(input:{sessionId:string;title:string;description:string;hashtags:string[]}) {
+    return withSessionOperation(input.sessionId, async () => {
+      const session=await this.getState({sessionId:input.sessionId});
+      if (!session?.manualMode) throw new Error('SEO thủ công chỉ lưu khi đã chọn chế độ nhập thủ công.');
+      if (typeof input.title!=='string' || !input.title.trim() || input.title.length>100 ||
+        typeof input.description!=='string' || !input.description.trim() || input.description.length>10000 ||
+        !Array.isArray(input.hashtags) || input.hashtags.length>30 || input.hashtags.some(tag=>typeof tag!=='string'||!tag.trim()||tag.length>100)) throw new Error('SEO thủ công không hợp lệ.');
+      const metadata={title:input.title.trim(),description:input.description.trim(),hashtags:input.hashtags.map(tag=>tag.trim()),thumbnailPrompt:'',source:'manual_authored' as const};
+      const file=path.join(this.getSessionAssetsDir(session.sessionId),`seo_manual_${crypto.randomUUID()}.json`);
+      fs.mkdirSync(path.dirname(file),{recursive:true});
+      fs.writeFileSync(file,JSON.stringify(metadata,null,2),{flag:'wx'});
+      session.artifacts.metadata=metadata;
+      session.stages[8]={status:'success',stageName:'SEO nhập thủ công'};
+      this.persistSessionStateAtomic(session);
+      return {session,metadataPath:file};
+    });
+  }
+
   private async renderVideoInternal(payload: RenderVideoPayload, signal: AbortSignal): Promise<RenderVideoResult> {
     const session = await this.getState({ sessionId: payload.sessionId });
     if (!session || !session.artifacts.audioPath || !session.artifacts.scenes) {
       throw new Error(`Session assets không tìm thấy cho việc dựng lại video: ${payload.sessionId}`);
     }
+    if (session.manualMode && session.artifacts.scenes.some(s => s.status !== 'ready' || !s.assetPath)) throw new Error('Cần nhập media hợp lệ cho tất cả scene trước khi xuất.');
 
     const config = this.resolveSessionConfig(session);
     const assetsDir = this.getSessionAssetsDir(session.sessionId);
@@ -2346,6 +2502,14 @@ export class AiStudioPipelineEngine implements IAiStudioPipelineEngineDelegate {
 
     signal.throwIfAborted();
     session.artifacts.videoPath = assemblyResult.videoPath;
+    if (session.manualMode) {
+      session.currentStage = 7; session.stageName = 'render'; session.status = 'completed'; session.progress = 100;
+      session.stages[6] = { status: 'success', stageName: 'Media nhập thủ công đã kiểm định' };
+      session.stages[7] = { status: 'success', stageName: STAGE_CONFIG[7].label };
+      session.stages[8] = session.artifacts.metadata?.source === 'manual_authored'
+        ? {status:'success',stageName:'SEO nhập thủ công'}
+        : { status: 'skipped', stageName: 'Không yêu cầu SEO cho video thủ công' };
+    }
     this.persistSessionStateAtomic(session);
 
     return { videoPath: assemblyResult.videoPath };

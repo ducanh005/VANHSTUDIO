@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import type { PipelineSessionState } from '../../../types/aiStudio';
 import ActionableErrorBanner from '../ActionableErrorBanner';
+import { stageApprovalIssue } from '../../../../shared/studioStageReadiness';
 
 export const STAGES = [
   { id: 1, name: 'Dữ kiện', icon: FileText },
@@ -138,6 +139,7 @@ export const PipelineTrackerPanel: React.FC<PipelineTrackerPanelProps> = ({
               <button
                 type="button"
                 onClick={() => onResumeRun()}
+                disabled={session.manualMode}
                 className="rounded px-2.5 py-1 text-[11px] font-bold text-white bg-emerald-600 hover:bg-emerald-500 transition cursor-pointer flex items-center gap-1"
                 title="Tiếp tục tiến trình từ bước này"
               >
@@ -158,7 +160,7 @@ export const PipelineTrackerPanel: React.FC<PipelineTrackerPanelProps> = ({
         ) : (
           <>
             {/* Gated Stage Approval Banner (Chờ phê duyệt) */}
-            {session.status === 'awaiting_approval' && (
+            {session.status === 'awaiting_approval' && !session.manualMode && (
               <div className="rounded-lg border border-amber-500/40 bg-gradient-to-r from-amber-950/40 via-slate-900/90 to-slate-950/90 p-4 animate-in fade-in duration-300">
                 <div className="flex items-start gap-3">
                   <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-amber-500/20 border border-amber-500/40 text-amber-400">
@@ -202,7 +204,7 @@ export const PipelineTrackerPanel: React.FC<PipelineTrackerPanelProps> = ({
                   <button
                     type="button"
                     onClick={onApproveStage}
-                    disabled={isApproving}
+                    disabled={isApproving || Boolean(stageApprovalIssue(session))}
                     className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 px-4 py-1.5 text-xs font-bold text-white transition active:scale-95 cursor-pointer disabled:opacity-50"
                   >
                     {isApproving ? (
@@ -223,7 +225,7 @@ export const PipelineTrackerPanel: React.FC<PipelineTrackerPanelProps> = ({
             )}
 
             {/* Banner khi tiến trình đã tạm dừng / hủy tiến trình */}
-            {session.status === 'cancelled' && !isRunning && (
+            {session.status === 'cancelled' && !isRunning && !session.manualMode && (
               <div className="rounded-lg border border-amber-500/40 bg-gradient-to-r from-amber-950/40 via-slate-900/90 to-slate-950/90 p-4 animate-in fade-in duration-300">
                 <div className="flex items-start gap-3">
                   <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-amber-500/20 border border-amber-500/40 text-amber-400">
@@ -342,7 +344,13 @@ export const PipelineTrackerPanel: React.FC<PipelineTrackerPanelProps> = ({
                 );
                 let borderColor = 'border-border bg-[#0B101E]';
 
-                if (stageStatus === 'success') {
+                if (stageStatus === 'skipped') {
+                  statusBadge = <span className="text-[10px] text-text-muted">Bỏ qua</span>;
+                } else if (session?.manualMode && (st.id <= 5 || st.id === 8) && stageStatus === 'success') {
+                  statusBadge = <span className="text-[10px] text-cyan-300">Nhập thủ công</span>;
+                } else if (session?.status === 'awaiting_approval' && isCurrent && stageStatus === 'success' && !session.manualMode) {
+                  statusBadge = <span className="text-[10px] text-amber-400">Chờ duyệt</span>;
+                } else if (stageStatus === 'success') {
                   statusBadge = (
                     <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-400">
                       <CheckCircle2 className="h-3 w-3" /> Xong
@@ -373,6 +381,7 @@ export const PipelineTrackerPanel: React.FC<PipelineTrackerPanelProps> = ({
                 return (
                   <div
                     key={st.id}
+                    data-stage={st.id}
                     className={`flex flex-col justify-between rounded-md border p-2.5 transition-all ${borderColor}`}
                   >
                     <div className="flex items-center justify-between mb-1">

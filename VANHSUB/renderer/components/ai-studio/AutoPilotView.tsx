@@ -54,14 +54,67 @@ export default function AutoPilotView({ onSwitchProject }: AutoPilotViewProps = 
   const [topic, setTopic] = useState('');
   const [session, setSession] = useState<PipelineSessionState | null>(null);
   const [isRunning, setIsRunning] = useState(false);
+  const startInFlight = useRef(false);
   const [isApproving, setIsApproving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [readinessWarning, setReadinessWarning] = useState<string | null>(null);
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [isDiagnosticsModalOpen, setIsDiagnosticsModalOpen] = useState(false);
   const [isChromeBridgeModalOpen, setIsChromeBridgeModalOpen] = useState(false);
   const [isAdvancedDrawerOpen, setIsAdvancedDrawerOpen] = useState(false);
   const [countdownSeconds, setCountdownSeconds] = useState<number | null>(null);
   const [isGatedMode, setIsGatedMode] = useState(true);
+  const [manualBusy, setManualBusy] = useState(false);
+  const [manualSeo,setManualSeo]=useState({title:'',description:'',hashtags:''});
+  const [mediaCheck,setMediaCheck]=useState('');
+  const [mediaChecking,setMediaChecking]=useState(false);
+  useEffect(()=>{
+    if(session?.manualMode)setManualSeo({title:session.artifacts.metadata?.title||'',description:session.artifacts.metadata?.description||'',hashtags:session.artifacts.metadata?.hashtags?.join(' ')||''});
+  },[session?.sessionId]);
+  const handleSaveManualSeo=async()=>{
+    if(!session?.manualMode||manualBusy||!window.vanhsub.aiStudio.saveManualSeo)return;
+    const id=session.sessionId,projectId=getActiveProject()?.id;
+    setManualBusy(true);setErrorMessage(null);
+    try{
+      const result=await window.vanhsub.aiStudio.saveManualSeo({sessionId:id,title:manualSeo.title,description:manualSeo.description,hashtags:manualSeo.hashtags.split(/[\s,]+/).filter(Boolean)});
+      if(getActiveProject()?.id!==projectId)return;
+      setSession(result.session);await saveActiveProjectData({lastSessionId:id,savedSession:result.session});
+    }catch(error:any){setErrorMessage(error?.message||'Không lưu được SEO thủ công.');}
+    finally{setManualBusy(false);}
+  };
+  const handleStartManual = async () => {
+    const project = getActiveProject();
+    if (!project || manualBusy || isRunning) return;
+    setErrorMessage(null);
+    setErrorCode(null); setReadinessWarning(null);
+    setManualBusy(true);
+    try {
+      const srtPath = await window.vanhsub.dialog.openSrtFile();
+      if (!srtPath) return;
+      const audioPath = await window.vanhsub.dialog.openAudioFile();
+      if (!audioPath) return;
+      const result = await window.vanhsub.aiStudio.startManualMedia({ projectId: project.id, srtPath, audioPath });
+      const state = await window.vanhsub.aiStudio.getPipelineState({ sessionId: result.sessionId });
+      if (getActiveProject()?.id !== project.id) return;
+      setSession(state); setActiveTab('video'); setCenterTab('visual');
+      await saveActiveProjectData({ lastSessionId: result.sessionId, savedSession: state });
+    } catch (error: any) { setErrorMessage(error?.message || 'Không nhập được SRT/audio.'); }
+    finally { setManualBusy(false); }
+  };
+  const handleRenderManual = async () => {
+    if (!session?.manualMode || manualBusy || isRunning) return;
+    const projectId = getActiveProject()?.id, sessionId = session.sessionId;
+    setErrorMessage(null);
+    setErrorCode(null);
+    setManualBusy(true); setIsRunning(true);
+    try {
+      await window.vanhsub.aiStudio.renderVideo({ sessionId });
+      if (getActiveProject()?.id !== projectId) return;
+      const state = await window.vanhsub.aiStudio.getPipelineState({ sessionId });
+      setSession(state); await saveActiveProjectData({ lastSessionId: sessionId, savedSession: state });
+    } catch (error: any) { setErrorMessage(error?.message || 'Xuất video thủ công thất bại.'); }
+    finally { setManualBusy(false); setIsRunning(false); }
+  };
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isChannelModalOpen, setIsChannelModalOpen] = useState(false);
   const [isConfirmCancelOpen, setIsConfirmCancelOpen] = useState(false);
@@ -225,7 +278,8 @@ export default function AutoPilotView({ onSwitchProject }: AutoPilotViewProps = 
     const targetProjectId = loadedProjectIdRef.current || undefined;
     const targetId = scene.shotId || scene.id;
     setRegeneratingSceneId(targetId);
-    showSceneNotice(`Đang tạo lại ${mode === 'image' ? 'Ảnh AI' : mode === 'video' ? 'Video AI' : 'Media'} cho phân cảnh ${targetId} qua Flow...`);
+    const routeLabel=session.configSnapshot?.flowEngine.engine==='official_api'?'Official API':session.configSnapshot?.flowEngine.engine==='manual'?'Manual Import':'Legacy Flow';
+    showSceneNotice(`Đang tạo lại ${mode === 'image' ? 'Ảnh AI' : mode === 'video' ? 'Video AI' : 'Media'} cho phân cảnh ${targetId} qua ${routeLabel}...`);
 
     try {
       if (window.vanhsub?.aiStudio?.regenerateSceneAsset) {
@@ -363,12 +417,12 @@ export default function AutoPilotView({ onSwitchProject }: AutoPilotViewProps = 
                 setSelectedIdea(persistedState.artifacts.blueprint);
               }
               if (persistedState.artifacts?.scriptLines && persistedState.artifacts.scriptLines.length > 0) {
-                setCenterTab('script');
+                setCenterTab(persistedState.manualMode ? 'visual' : 'script');
               }
             } else if (activeProject.savedSession) {
               setSession(activeProject.savedSession);
               if (activeProject.savedSession.artifacts?.scriptLines && activeProject.savedSession.artifacts.scriptLines.length > 0) {
-                setCenterTab('script');
+                setCenterTab(activeProject.savedSession.manualMode ? 'visual' : 'script');
               }
             }
           })
@@ -377,14 +431,14 @@ export default function AutoPilotView({ onSwitchProject }: AutoPilotViewProps = 
             if (activeProject.savedSession) {
               setSession(activeProject.savedSession);
               if (activeProject.savedSession.artifacts?.scriptLines && activeProject.savedSession.artifacts.scriptLines.length > 0) {
-                setCenterTab('script');
+                setCenterTab(activeProject.savedSession.manualMode ? 'visual' : 'script');
               }
             }
           });
       } else if (activeProject.savedSession) {
         setSession(activeProject.savedSession);
         if (activeProject.savedSession.artifacts?.scriptLines && activeProject.savedSession.artifacts.scriptLines.length > 0) {
-          setCenterTab('script');
+          setCenterTab(activeProject.savedSession.manualMode ? 'visual' : 'script');
         }
       } else {
         setSession(null);
@@ -666,11 +720,9 @@ export default function AutoPilotView({ onSwitchProject }: AutoPilotViewProps = 
   };
 
   const handleStartWithBlueprint = async (blueprint: IdeaBlueprint) => {
+    if (isRunning || startInFlight.current) return;
     setErrorMessage(null);
-    setIsRunning(true);
-    setCenterTab('script');
-    setTopic(blueprint.title || blueprint.topic);
-    setSelectedIdea(blueprint);
+    setErrorCode(null); setReadinessWarning(null);
 
     const currentOutputDir = activeProj?.outputDir?.trim();
     if (!currentOutputDir) {
@@ -683,6 +735,15 @@ export default function AutoPilotView({ onSwitchProject }: AutoPilotViewProps = 
     setIdeas(nextIdeas);
 
     try {
+      startInFlight.current = true;
+      if (!window.vanhsub.aiStudio.getReadiness) throw new Error('Cần bản app có kiểm tra cấu hình trước khi chạy.');
+      const readiness = await window.vanhsub.aiStudio.getReadiness();
+      if (!readiness.ready) throw new Error(readiness.reasons.join(' '));
+      if (readiness.warnings.length) setReadinessWarning(readiness.warnings.join(' '));
+      setIsRunning(true);
+      setCenterTab('script');
+      setTopic(blueprint.title || blueprint.topic);
+      setSelectedIdea(blueprint);
       const result = await window.vanhsub.aiStudio.startPipeline({
         topic: (blueprint.title || blueprint.topic).trim(),
         projectId: activeProj?.id,
@@ -729,6 +790,8 @@ export default function AutoPilotView({ onSwitchProject }: AutoPilotViewProps = 
     } catch (err: any) {
       setIsRunning(false);
       setErrorMessage(err?.message || 'Không thể khởi động pipeline');
+    } finally {
+      startInFlight.current = false;
     }
   };
 
@@ -1014,6 +1077,23 @@ export default function AutoPilotView({ onSwitchProject }: AutoPilotViewProps = 
       {/* ==================================================================== */}
       {/* 3-COLUMN REVO WORKSPACE LAYOUT                                        */}
       {/* ==================================================================== */}
+      <div className="flex items-center gap-3 border-b border-border px-4 py-2 text-xs">
+        <button type="button" disabled={mediaChecking||isRunning} className="rounded border border-border px-2 py-1 disabled:opacity-50" onClick={async()=>{setMediaChecking(true);try{const result=await window.vanhsub.aiStudio.getMediaReadiness(session?{sessionId:session.sessionId}:undefined);setMediaCheck(`${result.status} · ${result.route} · chưa Live verified${result.reasons.length?' · '+result.reasons.join(' '):''}`);}catch{setMediaCheck('FAILED: không kiểm tra được cấu hình media.');}finally{setMediaChecking(false);}}}>{mediaChecking?'Đang kiểm tra…':'Kiểm tra media tập này'}</button>
+        {mediaCheck&&<span role="status">{mediaCheck}</span>}
+        {readinessWarning && <span role="status" className="text-amber-300">{readinessWarning}</span>}
+        <button type="button" disabled={manualBusy || isRunning || !!session?.jobActive} onClick={handleStartManual} className="rounded border border-border px-3 py-1.5 disabled:opacity-50">Nhập SRT + audio thủ công</button>
+        {session?.manualMode && <><span>Storyboard thủ công · media nhập từ máy</span><button type="button" disabled={manualBusy || isRunning || !!session.jobActive || !session.artifacts.scenes?.every(s => s.status === 'ready' && s.assetPath)} onClick={handleRenderManual} className="rounded bg-accent px-3 py-1.5 text-white disabled:opacity-50">{manualBusy ? 'Đang xử lý…' : 'Xuất video thủ công'}</button></>}
+      </div>
+      {session?.manualMode && <details className="border-b border-border px-4 py-2 text-xs">
+        <summary className="cursor-pointer">SEO nhập thủ công — không gọi LLM hoặc đăng tải</summary>
+        <div className="mt-2 grid gap-2 md:grid-cols-2">
+          <label>Tiêu đề SEO<input aria-label="Tiêu đề SEO thủ công" maxLength={100} value={manualSeo.title} onChange={e=>setManualSeo({...manualSeo,title:e.target.value})} className="mt-1 w-full rounded border border-border bg-bg p-2"/></label>
+          <label>Hashtags<input aria-label="Hashtags SEO thủ công" value={manualSeo.hashtags} onChange={e=>setManualSeo({...manualSeo,hashtags:e.target.value})} className="mt-1 w-full rounded border border-border bg-bg p-2"/></label>
+          <label className="md:col-span-2">Mô tả<textarea aria-label="Mô tả SEO thủ công" maxLength={10000} value={manualSeo.description} onChange={e=>setManualSeo({...manualSeo,description:e.target.value})} className="mt-1 w-full rounded border border-border bg-bg p-2"/></label>
+          <button type="button" onClick={handleSaveManualSeo} disabled={manualBusy||!manualSeo.title.trim()||!manualSeo.description.trim()} className="w-fit rounded border border-border px-3 py-2 disabled:opacity-50">Lưu SEO thủ công</button>
+          {session.artifacts.metadata?.source==='manual_authored' && <span role="status">SEO đã lưu · người dùng biên soạn</span>}
+        </div>
+      </details>}
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 overflow-hidden">
         {/* ------------------------------------------------------------------ */}
         {/* CỘT 1 (LEFT - 3 COLS): Ý TƯỞNG VIDEO (IdeaListPanel)                */}

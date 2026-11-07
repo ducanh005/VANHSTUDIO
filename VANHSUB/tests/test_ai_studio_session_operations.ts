@@ -22,7 +22,7 @@ async function main() {
     const seed = (id: string, stage = 2) => {
       const state: any = {
         sessionId: id, topic: id, currentStage: stage, stageName: 'script', status: 'awaiting_approval', progress: 25,
-        configSnapshot: captureSessionConfig(DEFAULT_AI_STUDIO_CONFIG), workspaceDir: path.join(root, id), mediaDir: path.join(root, id, 'media'),
+        configSnapshot: captureSessionConfig({...DEFAULT_AI_STUDIO_CONFIG,llm:{...DEFAULT_AI_STUDIO_CONFIG.llm,apiKey:'synthetic-lease-fixture'}}), workspaceDir: path.join(root, id), mediaDir: path.join(root, id, 'media'),
         stages: Object.fromEntries(Array.from({ length: stage }, (_, i) => [i + 1, { status: 'success', stageName: 'Test' }])),
         artifacts: { scriptLines: [{ id: 'l1', index: 1, text: 'Original narration' }] }, createdAt: Date.now(), updatedAt: Date.now(),
       };

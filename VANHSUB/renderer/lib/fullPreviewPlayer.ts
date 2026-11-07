@@ -1,3 +1,5 @@
+import { setAudioPreviewSource, clearAudioPreviewSource } from './audioPreviewSource';
+
 /**
  * Player "nghe thử toàn bộ 1 mạch" — singleton sống ngoài React,
  * nên việc chuyển tab (unmount TTSPage) không làm dừng playback.
@@ -95,7 +97,7 @@ export const fullPreviewPlayer = {
           const next = i < lines.length ? fetchLine(i + 1) : null;
 
           const el = getAudio();
-          el.src = `data:${res.mimeType};base64,${res.audioBase64}`;
+          setAudioPreviewSource(el, res);
           await new Promise<void>((resolve) => {
             const done = () => resolve();
             el.onended = done;
@@ -108,7 +110,7 @@ export const fullPreviewPlayer = {
       } catch {
         // lỗi tải audio giữa chừng — dừng im lặng, UI tự thoát trạng thái playing
       } finally {
-        getAudio().pause();
+        clearAudioPreviewSource(getAudio());
         setState({ playing: false, currentLine: null });
       }
     })();

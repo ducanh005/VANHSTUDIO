@@ -1,4 +1,8 @@
 import { parseScriptEvaluation, resolveEvaluationConfig, SCRIPT_REVIEW_CRITERIA } from '../scriptEvaluation';
+import { assertUsableScript } from '../../../shared/aiStudioScript';
+import { selectLlmProvider } from '../llmProviderConfig';
+import { studioLlmReadiness } from '../../../shared/studioLlmReadiness';
+import { redactLogText } from '../../security/logRedaction';
 import { parseRefinedScript } from '../scriptRefinement';
 import OpenAI from 'openai';
 import { jsonrepair } from 'jsonrepair';
@@ -40,6 +44,9 @@ export class AiStudioLlmService {
   // Client Factory
   // ==========================================================================
   private createClient(config: AiStudioLlmConfig): { client: OpenAI; model: string } | null {
+    const readiness = studioLlmReadiness(config);
+    if (!readiness.ready) throw new Error(readiness.reasons.join(' '));
+    if (config.provider === 'chatgpt_web' || config.provider === 'gemini_web') return null;
     const rawApiKey = (config.apiKey || '').trim();
     if (!rawApiKey) return null;
 
@@ -56,11 +63,15 @@ export class AiStudioLlmService {
       apiKey: rawApiKey,
       baseURL,
       timeout: 45_000,
-      maxRetries: 1,
+      maxRetries: 0,
     });
 
-    const model = config.model || (config.provider === 'deepseek' ? 'deepseek-chat' : 'gpt-4o');
+    const model = readiness.model;
     return { client, model };
+  }
+
+  public resolveChannelLlmConfig(config: AiStudioLlmConfig, profile?: Partial<ChannelProfileConfig>): AiStudioLlmConfig {
+    return selectLlmProvider(config, profile?.aiProvider);
   }
 
   // ==========================================================================
@@ -184,7 +195,7 @@ export class AiStudioLlmService {
         throw new Error('Không tìm thấy khối JSON trong văn bản phản hồi');
       }
     } catch (parseErr) {
-      console.warn('[AiStudioLlmService] parseBlueprintJson: jsonrepair failed, recovering via regex field extraction:', parseErr);
+      // Recover only fields actually supplied by the provider; never invent an outline.
 
       const extractField = (pattern: RegExp): string => {
         const match = sanitizedText.match(pattern);
@@ -225,8 +236,8 @@ export class AiStudioLlmService {
 
       parsed = {
         title: title || topic,
-        hookConcept: hookConcept || `Bạn có tin vào sự thật đằng sau ${topic}?`,
-        narrativeAngle: narrativeAngle || 'Góc tiếp cận độc đáo, đột phá của kênh',
+        hookConcept,
+        narrativeAngle,
         outline: outlineMatches.length >= 2 ? outlineMatches : undefined,
         thumbnailConcept,
         thumbnailPrompt,
@@ -280,29 +291,9 @@ export class AiStudioLlmService {
       }
     }
 
-    // Fallback 2: Nếu outline vẫn dưới 3 phân đoạn, phân giải theo cấu trúc nhiều phân đoạn tiêu chuẩn tương ứng thời lượng
-    if (outlineArray.length < 3) {
-      const beatCount = aspectRatio === '9:16' ? 4 : 6;
-      const step = Math.max(15, Math.round(estimatedDurationSec / beatCount));
-      const formatTime = (seconds: number): string => {
-        const m = Math.floor(seconds / 60);
-        const s = seconds % 60;
-        return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-      };
-      const baseDetail = outlineArray.join('; ') || parsed.hookConcept || topic;
-      const defaultThemes = [
-        'Mở đầu gây sốc & Khởi phát sự kiện giật gân',
-        'Khám phá manh mối & Bối cảnh diễn biến kịch tính',
-        'Leo thang căng thẳng & Phát hiện xung đột then chốt',
-        'Bước ngoặt bất ngờ & Đỉnh điểm cao trào kịch tính',
-        'Hạ màn giải mã sự thật & Đúc kết bài học sâu sắc',
-        'Chiêm nghiệm thực tế & Kêu gọi hành động (CTA) đăng ký kênh',
-      ];
-      outlineArray = defaultThemes.slice(0, beatCount).map((theme, idx) => {
-        const startSec = idx * step;
-        const endSec = idx === beatCount - 1 ? estimatedDurationSec : (idx + 1) * step;
-        return `Phân đoạn ${idx + 1} [${formatTime(startSec)} - ${formatTime(endSec)}]: ${theme} (${baseDetail.slice(0, 70)}...)`;
-      });
+    if (outlineArray.length < 3 || outlineArray.some(beat => typeof beat !== 'string' || !/[\p{L}\p{N}]/u.test(beat)) ||
+        ['title','hookConcept','narrativeAngle'].some(key => typeof parsed[key] !== 'string' || !parsed[key].trim())) {
+      throw new Error('LLM trả blueprint sai schema: cần title, hookConcept, narrativeAngle và ít nhất 3 ý có nội dung. Không dùng dàn ý mẫu.');
     }
 
     // Thiết lập thumbnailPrompt dự phòng chuẩn theo Nhân vật và Model của Kênh
@@ -388,10 +379,7 @@ export class AiStudioLlmService {
       channelProfile?.aiProvider && channelProfile.aiProvider !== 'default'
         ? channelProfile.aiProvider
         : config?.provider || 'deepseek';
-    const effectiveConfig: AiStudioLlmConfig = {
-      ...config,
-      provider: effectiveProvider,
-    };
+    const effectiveConfig = this.resolveChannelLlmConfig(config, channelProfile);
 
     // Tính toán mục tiêu thời lượng và số lượng phân đoạn dàn ý
     let durationLabel = '3 - 5 phút';
@@ -629,8 +617,10 @@ Yêu cầu nghiêm ngặt: Trả về DUY NHẤT một khối JSON hợp lệ th
       const rawText = response.choices[0]?.message?.content || '';
       return this.parseBlueprintJson(rawText, topic, aspectRatio, channelProfile);
     } catch (err: any) {
-      console.error(`[AiStudioLlmService] Remote LLM error (${config.provider}):`, err);
-      throw new Error(`Lỗi kết nối API ${config.provider}: ${err?.message || err}`);
+      console.error('[AiStudioLlmService] Blueprint generation failed; provider:', config.provider);
+      let message=redactLogText(String(err?.message || 'Không có blueprint hợp lệ.'));
+      if(config.apiKey)message=message.split(config.apiKey).join('[REDACTED]');
+      throw new Error(`Lỗi kết nối API ${config.provider}: ${message}`);
     }
   }
 
@@ -644,6 +634,7 @@ Yêu cầu nghiêm ngặt: Trả về DUY NHẤT một khối JSON hợp lệ th
     blueprint?: IdeaBlueprint,
     channelProfile?: ChannelProfileConfig
   ): Promise<ScriptBeatLine[]> {
+    config = this.resolveChannelLlmConfig(config, channelProfile);
     // 0. Nếu người dùng đã cung cấp sẵn kịch bản (Existing Script), tự động tách câu
     if (blueprint?.existingScript && blueprint.existingScript.trim().length >= 10) {
       onProgress?.('Đang phân tách kịch bản có sẵn thành các câu độc lập...');
@@ -786,11 +777,14 @@ Yêu cầu cấu trúc Kịch bản 2 Cột Điện ảnh (Two-Column Audiovisua
         const repaired = jsonrepair(cleaned);
         const parsed = JSON.parse(repaired);
         const rawLines = Array.isArray(parsed) ? parsed : parsed.lines;
+        if (!Array.isArray(rawLines) || rawLines.length < 3 || rawLines.some(item => {
+          const text = item?.text ?? item?.content ?? item?.voiceover;
+          return typeof text !== 'string' || !/[\p{L}\p{N}]/u.test(text);
+        })) throw new Error('SCRIPT_SCHEMA_INVALID');
         if (Array.isArray(rawLines) && rawLines.length >= 3) {
           lines = rawLines.map((item: any, idx: number) => {
             const text = String(item.text || item.content || item.voiceover || '').trim();
-            const fallbackText = `Chào mừng bạn đến với phần ${idx + 1} của chủ đề ${topic}.`;
-            const finalText = text.length >= 10 ? text : fallbackText;
+            const finalText = text;
 
             const visualAction = String(
               item.visualAction || item.visual_action || item.visualNote || item.visual_note || finalText
@@ -833,6 +827,8 @@ Yêu cầu cấu trúc Kịch bản 2 Cột Điện ảnh (Two-Column Audiovisua
           });
         }
       } catch {
+        // Malformed structured responses are failures, never narration or invented filler.
+        if (/^[\s]*[\[{]|```json/i.test(rawText) || /^\s*</.test(rawText)) throw new Error('LLM trả script sai schema hoặc có dòng rỗng.');
         // Không phải JSON: Xử lý định dạng văn bản Strict Output (SCRIPT: ... --- END OF SCRIPT ---)
         let scriptBody = rawText;
         const scriptMatch = rawText.match(/SCRIPT:\s*([\s\S]*?)(?:---\s*END OF SCRIPT\s*---|NARRATION DIRECTION:|$)/i);
@@ -843,17 +839,15 @@ Yêu cầu cấu trúc Kịch bản 2 Cột Điện ảnh (Two-Column Audiovisua
       }
 
       if (!lines || lines.length < 3) {
-        lines = this.splitScriptToBeatLines(rawText);
-      }
-
-      if (!lines || lines.length < 3) {
         throw new Error('LLM không trả về danh sách phân cảnh hoặc kịch bản hợp lệ.');
       }
 
       return this.applyChannelHook(lines, channelProfile);
     } catch (err: any) {
-      console.error('[AiStudioLlmService] Script generation API error:', err);
-      throw new Error(`Lỗi gọi API sinh kịch bản (${config.provider}): ${err?.message || err}`);
+      let message=redactLogText(String(err?.message || 'Provider không trả kịch bản hợp lệ.'));
+      if(config.apiKey)message=message.split(config.apiKey).join('[REDACTED]');
+      console.error('[AiStudioLlmService] Script generation failed; provider:',config.provider);
+      throw new Error(`Lỗi gọi API sinh kịch bản (${config.provider}): ${message}`);
     }
   }
 
@@ -898,16 +892,7 @@ Yêu cầu cấu trúc Kịch bản 2 Cột Điện ảnh (Two-Column Audiovisua
     channelProfile?: Partial<ChannelProfileConfig>,
     config?: AiStudioLlmConfig
   ): Promise<ScriptEvaluation> {
-    if (!lines || lines.length === 0) {
-      return {
-        overallScore: 0,
-        lowestScore: 0,
-        criteria: [],
-        failedCriteria: ['D1', 'D2', 'D3', 'D4', 'D5', 'D6', 'D7', 'D8', 'D9', 'D10'],
-        critique: 'Chưa có câu thoại nào trong kịch bản để đánh giá.',
-        evaluatedAt: Date.now(),
-      };
-    }
+    assertUsableScript(lines);
 
     if (!config) throw new Error('Chưa có cấu hình provider chấm điểm.');
     const evaluationConfig = resolveEvaluationConfig(config, channelProfile);
@@ -956,6 +941,7 @@ Không tự tính điểm tổng, không khẳng định đã nghiên cứu ngu�
     config?: AiStudioLlmConfig
   ): Promise<{ lines: ScriptBeatLine[]; evaluation?: ScriptEvaluation }> {
     if (!lines?.length) throw new Error('Chưa có kịch bản để sửa.');
+    assertUsableScript(lines);
     if (!config) throw new Error('Chưa có cấu hình provider cho tập.');
     if (mode === 'custom_prompt' && !instructions?.trim()) throw new Error('Chưa nhập yêu cầu chỉnh sửa.');
     const currentEval = mode === 'improve_weaknesses' ? await this.evaluateScript(lines, blueprint, channelProfile, config) : undefined;
@@ -1128,6 +1114,15 @@ Trả về DUY NHẤT một khối JSON hợp lệ theo cấu trúc:
       throw new Error('[AiStudioLlmService] LLM returned empty shots array');
     }
 
+    let nextSentence = 1;
+    for (const shot of shots) {
+      if (!shot || !['image','video'].includes(shot.media_type) || typeof shot.image_prompt !== 'string' || !shot.image_prompt.trim() ||
+          !Array.isArray(shot.assigned_sentences) || !shot.assigned_sentences.length || shot.assigned_sentences.some((n: unknown) => !Number.isInteger(n) || n !== nextSentence++)) {
+        throw new Error('LLM trả storyboard sai schema hoặc sai thứ tự/ownership câu thoại.');
+      }
+    }
+    if (nextSentence !== scriptLines.length + 1) throw new Error('LLM storyboard bỏ sót hoặc vượt số câu thoại.');
+
     // Validate and sanitize shots
     const validShots = shots.map((s: any, idx: number) => {
       const assigned = Array.isArray(s.assigned_sentences)
@@ -1166,6 +1161,7 @@ Trả về DUY NHẤT một khối JSON hợp lệ theo cấu trúc:
   ): Promise<SeoMetadata> {
     const clientBundle = config ? this.createClient(config) : null;
     if (!clientBundle) {
+      if (config) throw new Error('Provider đã chọn chưa có adapter SEO tự động; không dùng metadata mẫu để báo thành công.');
       return this.generateFallbackSeo(topic, scriptLines);
     }
 
@@ -1198,12 +1194,12 @@ Trả về JSON DUY NHẤT:
       const title = String(parsed.title || '').trim();
       const validTitle = title.length >= 10 && title.length <= 100
         ? title
-        : `${topic} — Những Bí Ẩn Rùng Mình Chưa Ai Giải Mã Được`;
+        : '';
 
       const description = String(parsed.description || '').trim();
       const validDesc = description.length >= 50
         ? description
-        : `Khám phá chi tiết về chủ đề: ${topic}. Video được sản xuất tự động hoàn chỉnh từ Kịch bản, Giọng đọc AI đến Hình ảnh bởi Vanhsub AI Video Studio. Đừng quên bấm Like và Đăng Ký kênh!`;
+        : '';
 
       let hashtags: string[] = [];
       if (Array.isArray(parsed.hashtags) && parsed.hashtags.length >= 3) {
@@ -1213,13 +1209,14 @@ Trả về JSON DUY NHẤT:
         });
       }
       if (hashtags.length < 3) {
-        hashtags = ['#vanhsub', '#bian', '#daiduong', '#khampha', '#khoahoc', '#aivideo'];
+        throw new Error('SEO thiếu hashtag hợp lệ.');
       }
 
       const thumbnailPrompt = String(parsed.thumbnailPrompt || '').trim();
       const validThumb = thumbnailPrompt.length >= 20
         ? thumbnailPrompt
-        : `Cinematic eye-level shot of a colossal glowing eye in oceanic abyss, submarine searchlight beam, 8k YouTube thumbnail style`;
+        : '';
+      if (!validTitle || !validDesc || !validThumb) throw new Error('SEO không đúng schema.');
 
       return {
         title: validTitle,
@@ -1227,9 +1224,8 @@ Trả về JSON DUY NHẤT:
         hashtags,
         thumbnailPrompt: validThumb,
       };
-    } catch (err) {
-      console.warn('[AiStudioLlmService] Remote LLM SEO generation failed, falling back:', err);
-      return this.generateFallbackSeo(topic, scriptLines);
+    } catch {
+      throw new Error('Provider LLM không tạo được SEO hợp lệ. Video đã có được giữ nguyên; có thể nhập metadata thủ công ngoài luồng tự động.');
     }
   }
 
@@ -1411,6 +1407,7 @@ Chấm điểm trên thang 100 và trả về JSON DUY NHẤT:
     config?: AiStudioLlmConfig,
     onProgress?: (msg: string) => void
   ): Promise<string> {
+    if (config) config = this.resolveChannelLlmConfig(config, channelProfile);
     const projectName = (channelProfile.projectName || channelProfile.channelNiche || 'Kênh YouTube').trim();
     const niche = channelProfile.channelNiche || projectName || 'Nội dung khám phá & kiến thức chuyên sâu';
     const desc = channelProfile.channelDescription || 'Kênh chia sẻ những câu chuyện và góc nhìn độc đáo, hấp dẫn.';
@@ -1530,7 +1527,7 @@ Output NOTHING else. No analysis, no planning, no alternative titles, no word co
     const hasActiveLlm =
       effectiveProvider === 'chatgpt_web' ||
       effectiveProvider === 'gemini_web' ||
-      Boolean(config?.apiKey);
+      Boolean(config);
 
     if (hasActiveLlm) {
       try {
@@ -1719,6 +1716,7 @@ Bắt đầu ngay bằng mục 1 SYSTEM ROLE.`;
           resultText = await mgr.executePromptTurn(userPrompt, mode, onProgress);
         } else if (config) {
           const clientBundle = this.createClient({ ...config, provider: effectiveProvider });
+          if (!clientBundle) throw new Error(`Chưa cấu hình API Key cho ${effectiveProvider}.`);
           if (clientBundle) {
             const resp = await clientBundle.client.chat.completions.create({
               model: clientBundle.model,
@@ -1730,6 +1728,10 @@ Bắt đầu ngay bằng mục 1 SYSTEM ROLE.`;
         }
 
         if (resultText && resultText.trim().length >= 100) {
+          if (!['SYSTEM ROLE', 'CHANNEL DNA', 'STRICT OUTPUT FORMAT'].every(section => resultText.toUpperCase().includes(section)) ||
+              !/\{\{\s*CHANNEL_NAME\s*\}\}/i.test(resultText) || !/\{\{\s*SOURCE_MATERIAL\s*\}\}/i.test(resultText)) {
+            throw new Error('Phản hồi thiếu cấu trúc hoặc biến đầu vào của Master Prompt.');
+          }
           // Bảo vệ: Nếu vô tình bắt dính prompt template hướng dẫn, bỏ qua để không ghi đè master prompt hỏng
           if (
             resultText.includes('PHẦN F — CÁCH TRẢ LỜI') ||

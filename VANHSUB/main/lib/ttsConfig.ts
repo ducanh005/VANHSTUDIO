@@ -1,7 +1,8 @@
 export type TtsEngine = 'edge' | 'tiktok' | 'viettts';
 
-/** Edge voice IDs end in Neural; other selectable voice IDs belong to TikTok. */
-export function engineForVoice(voice: string): 'edge' | 'tiktok' {
+/** Recognize the installed Vietnamese Piper voice, Edge IDs and TikTok IDs. */
+export function engineForVoice(voice: string): TtsEngine {
+  if (voice.startsWith('vi_VN-')) return 'viettts';
   return voice.endsWith('Neural') ? 'edge' : 'tiktok';
 }
 

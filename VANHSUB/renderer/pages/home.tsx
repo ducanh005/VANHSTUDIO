@@ -37,6 +37,7 @@ import {
 } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import type { Task, WorkflowType } from '../types/task';
+import { engineForVoice } from '../../main/lib/ttsConfig';
 import { t, formatTimeAgo as formatTimeAgoHelper } from '../lib/i18n';
 import SubtitleEditor from '../components/SubtitleEditor';
 import ASRWorkspace from '../components/ASRWorkspace';
@@ -106,6 +107,8 @@ export default function HomePage() {
   const [searchQuery, setSearchQuery] = useState('');
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [asrModel, setAsrModel] = useState('base');
+  const [defaultTtsVoice, setDefaultTtsVoice] = useState('vi-VN-HoaiMyNeural');
+  const defaultTtsLabel = { edge: 'Edge TTS', tiktok: 'TikTok TTS', viettts: 'Local TTS' }[engineForVoice(defaultTtsVoice)];
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isZenMode, setIsZenMode] = useState(false);
@@ -200,6 +203,7 @@ export default function HomePage() {
 
     // Model ASR đang đặt trong Cài đặt (hiển thị ở widget AI Engine + Cấu hình mô hình)
     if (typeof window !== 'undefined' && window.vanhsub?.settings) {
+      window.vanhsub.settings.get('ttsVoice').then(v => { if (v) setDefaultTtsVoice(String(v)); }).catch(() => {});
       window.vanhsub.settings
         .get('asrModel')
         .then((v: string) => {
@@ -233,6 +237,9 @@ export default function HomePage() {
     if (typeof window === 'undefined' || !window.vanhsub?.settings?.onChange) return;
     let mounted = true;
     const unsubscribe = window.vanhsub.settings.onChange((key) => {
+      if (key === 'ttsVoice') window.vanhsub.settings.get(key).then(value => {
+        if (mounted) setDefaultTtsVoice(String(value || 'vi-VN-HoaiMyNeural'));
+      }).catch(() => {});
       if (key === 'asrModel') window.vanhsub.settings.get(key).then((value) => {
         if (mounted) setAsrModel(String(value || 'base'));
       }).catch(() => {});
@@ -566,7 +573,7 @@ export default function HomePage() {
           {isSidebarCollapsed ? (
             <div
               className="flex flex-col items-center justify-center p-2.5 rounded-md border border-border bg-surface-2 text-text-muted hover:text-text hover:border-border-strong transition-colors cursor-pointer"
-              title={`AI Core Engine: Hoạt động\nASR: Whisper ${asrModel}\nTranslate: Gemini Flash\nTTS: TikTok TTS`}
+              title={`AI Core Engine: Hoạt động\nASR: Whisper ${asrModel}\nTranslate: Gemini Flash\nTTS: ${defaultTtsLabel}`}
             >
               <Cpu className="h-4 w-4 text-text-muted" />
               <span className="mt-1.5 h-1.5 w-1.5 rounded-full bg-success" />
@@ -594,7 +601,7 @@ export default function HomePage() {
                 </div>
                 <div className="flex items-center justify-between">
                   <span>TTS Voice</span>
-                  <span className="font-mono text-text">TikTok TTS</span>
+                  <span className="font-mono text-text">{defaultTtsLabel}</span>
                 </div>
               </div>
             </div>
@@ -1126,7 +1133,7 @@ export default function HomePage() {
                   </div>
                   <div className="flex items-center justify-between rounded-md border border-border bg-surface-2 p-2.5">
                     <span className="text-text-muted">Lồng tiếng TTS</span>
-                    <span className="font-medium text-text">TikTok TTS Engine</span>
+                    <span className="font-medium text-text">{defaultTtsLabel}</span>
                   </div>
                 </div>
               </div>

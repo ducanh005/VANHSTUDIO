@@ -386,6 +386,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
       try {
         const actualDur = await this.probeDuration(resolvedPath);
         sc.originalMediaDurationSec = Math.round(actualDur * 100) / 100;
+        if (sc.mediaProvenance?.source === 'official_api' && actualDur > durSec + tolerance && sc.officialTrimAllowed !== true) {
+          throw new Error('OFFICIAL_TRIM_NOT_APPROVED: cần cho phép trim clip official trước khi render.');
+        }
         if (actualDur < durSec - tolerance) {
           if (sc.fillMode !== 'freeze_last_frame') {
             mismatches.push({
@@ -398,6 +401,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
           }
         }
       } catch (err) {
+        if (err instanceof Error && err.message.startsWith('OFFICIAL_TRIM_NOT_APPROVED')) throw err;
         console.warn(`[AiStudioVideoAssembler] Could not probe duration for ${resolvedPath}:`, err);
       }
     }
@@ -459,6 +463,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     interface VisualSegment {
       path: string;
       durationSec: number;
+      frames: number;
       actualDurationSec?: number;
       isVideo: boolean;
       shotId?: string;
@@ -467,30 +472,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
     const isVideoFile = (filePath: string) => /\.(mp4|webm|mov|mkv)$/i.test(filePath);
 
-    // Find the first valid asset to act as fallback if a scene is missing its asset file
-    let firstValidAssetPath: string | null = null;
-    for (const sc of scenes) {
-      const p = sc.assetPath || sc.imagePath || sc.videoPath;
-      if (p && fs.existsSync(p) && fs.statSync(p).size > 0) {
-        firstValidAssetPath = p;
-        break;
-      }
-    }
-
-    if (!firstValidAssetPath) {
-      throw new Error('Không tìm thấy bất kỳ hình ảnh hoặc video hợp lệ nào từ các phân cảnh để dựng phim.');
-    }
-
-    let lastKnownAssetPath = firstValidAssetPath;
+    if (!scenes.length) throw new Error('Thiếu media: chưa có scene để dựng phim.');
     const segments: VisualSegment[] = [];
 
     for (let i = 0; i < scenes.length; i++) {
       const sc = scenes[i];
-      let resolvedPath = sc.assetPath || sc.imagePath || sc.videoPath;
-      if (!resolvedPath || !fs.existsSync(resolvedPath) || fs.statSync(resolvedPath).size === 0) {
-        resolvedPath = lastKnownAssetPath;
-      } else {
-        lastKnownAssetPath = resolvedPath;
+      const resolvedPath = sc.assetPath || sc.imagePath || sc.videoPath;
+      if (!resolvedPath || !fs.existsSync(resolvedPath) || !fs.statSync(resolvedPath).isFile() || fs.statSync(resolvedPath).size === 0) {
+        throw new Error(`Thiếu media hợp lệ cho scene ${sc.id}; không dùng ảnh của scene khác thay thế.`);
       }
 
       let durSec = 4.0;
@@ -513,7 +502,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
       segments.push({
         path: resolvedPath,
-        durationSec: Math.max(0.5, Math.round(durSec * 100) / 100),
+        durationSec: Math.max(1 / fps, durSec),
+        frames: 0,
         actualDurationSec: actualDur,
         isVideo,
         shotId: sc.shotId || sc.id,
@@ -525,9 +515,21 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     let totalVisualSec = segments.reduce((sum, s) => sum + s.durationSec, 0);
     const visualAudioDiff = audioDurationSec - totalVisualSec;
     if (visualAudioDiff > 0.08 && segments.length > 0) {
-      segments[segments.length - 1].durationSec = Math.round((segments[segments.length - 1].durationSec + visualAudioDiff) * 100) / 100;
+      segments[segments.length - 1].durationSec += visualAudioDiff;
       totalVisualSec = segments.reduce((sum, s) => sum + s.durationSec, 0);
     }
+
+    // Round cumulative cut positions, rather than rounding every scene up independently.
+    // Independent trim durations accumulate extra frames and drift from the subtitle timeline.
+    let cumulativeSec = 0, previousEndFrame = 0;
+    for (const segment of segments) {
+      cumulativeSec += segment.durationSec;
+      const endFrame = Math.max(previousEndFrame + 1, Math.round(cumulativeSec * fps));
+      segment.frames = endFrame - previousEndFrame;
+      segment.durationSec = segment.frames / fps;
+      previousEndFrame = endFrame;
+    }
+    totalVisualSec = previousEndFrame / fps;
 
     console.log(
       `[AiStudioVideoAssembler] 🎬 Bắt đầu dựng phim đa phân cảnh: ${segments.length} segments, ` +
@@ -552,18 +554,18 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
           cmd.input(seg.path);
           const missingSec = Math.max(0.1, Number((seg.durationSec - actualDur + 0.5).toFixed(2)));
           filterChain.push(
-            `[${i}:v]${safeScale},tpad=stop_mode=clone:stop_duration=${missingSec},trim=duration=${seg.durationSec},setpts=PTS-STARTPTS[v${i}]`
+            `[${i}:v]${safeScale},tpad=stop_mode=clone:stop_duration=${missingSec},trim=end_frame=${seg.frames},setpts=N/(${fps}*TB)[v${i}]`
           );
         } else {
           // Keep narration coverage if the last segment is extended to the audio tail.
           cmd.input(seg.path).inputOptions(['-stream_loop -1']);
-          filterChain.push(`[${i}:v]${safeScale},trim=duration=${seg.durationSec},setpts=PTS-STARTPTS[v${i}]`);
+          filterChain.push(`[${i}:v]${safeScale},trim=end_frame=${seg.frames},setpts=N/(${fps}*TB)[v${i}]`);
         }
       } else {
         cmd.input(seg.path);
         if (renderingConfig.kenBurnsEffect) {
           // One source frame expands into exactly one scene, not frames per looped input frame.
-          const frames = Math.max(1, Math.ceil(seg.durationSec * fps));
+          const frames = seg.frames;
           const profiles = AiStudioVideoAssembler.getKenBurnsProfiles(width, height, seg.durationSec, fps);
 
           // Select profile from scene/beat metadata or alternate modulo
@@ -594,10 +596,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
           // 1.5x pre-upscaling before zoompan eliminates pixel shimmer on Windows FFmpeg
           const preScale = `${profile.scaleFilter},setsar=1`;
           const zoompan = `zoompan=${profile.zoomEquation}:${profile.panEquation}:d=${frames}:s=${width}x${height}:fps=${fps}`;
-          filterChain.push(`[${i}:v]${preScale},${zoompan},trim=duration=${seg.durationSec},setpts=PTS-STARTPTS[v${i}]`);
+          filterChain.push(`[${i}:v]${preScale},${zoompan},trim=end_frame=${frames},setpts=N/(${fps}*TB)[v${i}]`);
         } else {
-          cmd.inputOptions(['-loop 1', `-framerate ${fps}`, `-t ${seg.durationSec}`]);
-          filterChain.push(`[${i}:v]${safeScale},trim=duration=${seg.durationSec},setpts=PTS-STARTPTS[v${i}]`);
+          cmd.inputOptions(['-loop 1', `-framerate ${fps}`, `-t ${seg.durationSec + 1 / fps}`]);
+          filterChain.push(`[${i}:v]${safeScale},trim=end_frame=${seg.frames},setpts=N/(${fps}*TB)[v${i}]`);
         }
       }
       concatInputs.push(`[v${i}]`);
@@ -738,15 +740,15 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         try {
           (cmd as any).kill?.('SIGKILL');
         } catch {}
-        reject(new Error('Quá trình dựng video bị hủy bởi người dùng.'));
       };
 
       if (signal) {
-        if (signal.aborted) return abortHandler();
+        if (signal.aborted) return reject(new Error('Quá trình dựng video bị hủy bởi người dùng.'));
         signal.addEventListener('abort', abortHandler, { once: true });
       }
 
       cmd
+        .on('start', () => { if (signal?.aborted) abortHandler(); })
         .complexFilter(filterChain.join(';'))
         .outputOptions([
           '-map [vout]',
@@ -754,6 +756,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
           '-c:v libx264',
           '-pix_fmt yuv420p',
           '-preset veryfast',
+          '-threads 2',
+          '-filter_complex_threads 1',
           '-c:a aac',
           '-b:a 128k',
           `-t ${audioDurationSec}`,
@@ -766,10 +770,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
           }
         })
         .on('end', () => {
+          signal?.removeEventListener('abort', abortHandler);
+          if (signal?.aborted) return reject(new Error('Quá trình dựng video bị hủy bởi người dùng.'));
           if (onProgress) onProgress(100);
           resolve();
         })
         .on('error', (err, _stdout, stderr) => {
+          signal?.removeEventListener('abort', abortHandler);
+          if (signal?.aborted) return reject(new Error('Quá trình dựng video bị hủy bởi người dùng.'));
           console.error('[AiStudioVideoAssembler] FFmpeg render stderr:', stderr);
           reject(new Error(`FFmpeg video assembly failed: ${err.message}`));
         })

@@ -10,8 +10,8 @@ import { VideoProcessor } from './videoProcessor';
 import { TaskStore } from '../store/taskStore';
 import { SettingsStore } from '../store/settingsStore';
 import { GoogleVeoAntiSpamGuard } from '../veo/GoogleVeoAntiSpamGuard';
-import { GoogleVeoSessionManager } from '../veo/GoogleVeoSessionManager';
 import { GoogleFlowBrowserMutex } from './dispatcher/GoogleFlowBrowserMutex';
+import { createNodeProgressReporter } from './progress';
 
 export interface WorkflowGraphData {
   id: string;
@@ -220,11 +220,6 @@ export class WorkflowExecutionEngine {
             }
           }
 
-          if (!resolvedInputs['projectId']) {
-            const curPid = GoogleVeoSessionManager.getInstance().getCurrentProjectId();
-            if (curPid) resolvedInputs['projectId'] = curPid;
-          }
-
           // Last-frame chaining injection tự động
           if (!resolvedInputs['init_frame'] && globalLastFrameUrl) {
             resolvedInputs['init_frame'] = globalLastFrameUrl;
@@ -235,14 +230,14 @@ export class WorkflowExecutionEngine {
             nodeId,
             tempDir,
             exportDir,
-            onProgress: (percent: number) => {
+            onProgress: createNodeProgressReporter((percent: number) => {
               onEvent({
                 workflowId,
                 nodeId,
                 status: 'running',
                 progress: percent,
               });
-            },
+            }),
             isCancelled,
           };
 
@@ -447,11 +442,6 @@ export class WorkflowExecutionEngine {
       }
     }
 
-    if (!resolvedInputs['projectId']) {
-      const curPid = GoogleVeoSessionManager.getInstance().getCurrentProjectId();
-      if (curPid) resolvedInputs['projectId'] = curPid;
-    }
-
     const startTime = Date.now();
     onEvent({
       workflowId,
@@ -465,14 +455,14 @@ export class WorkflowExecutionEngine {
       nodeId,
       tempDir,
       exportDir,
-      onProgress: (percent: number) => {
+      onProgress: createNodeProgressReporter((percent: number) => {
         onEvent({
           workflowId,
           nodeId,
           status: 'running',
           progress: percent,
         });
-      },
+      }),
       isCancelled,
     };
 
@@ -649,7 +639,7 @@ export class WorkflowExecutionEngine {
         const modelVariant = config.modelVariant || 'omni-flash';
         const outputCount = Number(config.outputCount || 1);
 
-        const targetProjectId = inputs['projectId'] || inputs['project_id'] || config.projectId || GoogleVeoSessionManager.getInstance().getCurrentProjectId() || undefined;
+        const targetProjectId = inputs['projectId'] || inputs['project_id'] || config.projectId || undefined;
 
         const result = await WorkflowExecutionEngine.withBrowserMutex(async () => {
           return adapter.generateVideo(
@@ -943,7 +933,7 @@ export class WorkflowExecutionEngine {
         const aspectRatio = config.aspectRatio || '16:9';
         const imageEngine = config.imageEngine || 'banana-pro';
         const outputCount = Number(config.outputCount || 1);
-        const targetProjectId = inputs['projectId'] || inputs['project_id'] || config.projectId || GoogleVeoSessionManager.getInstance().getCurrentProjectId() || undefined;
+        const targetProjectId = inputs['projectId'] || inputs['project_id'] || config.projectId || undefined;
 
         const imgRes = await WorkflowExecutionEngine.withBrowserMutex(async () => {
           return adapter.generateImage!({ prompt, aspectRatio, imageEngine, outputCount, projectId: targetProjectId }, ctx);

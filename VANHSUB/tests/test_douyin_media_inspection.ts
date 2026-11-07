@@ -144,7 +144,9 @@ async function main() {
   for (const mode of ['softsub', 'hardsub'] as const) {
     const task = TaskStore.create({ fileName: path.basename(source), filePath: source, ...taskFiles(), mediaInspection: report, originalFilePath: source, cleanTechnicalMetadata: true });
     assert.equal(TaskStore.getById(task.id)?.mediaInspection?.reportPath, report.reportPath);
-    const exported = await ExportRunner.runExport(task.id, mode);
+    const progress: number[] = [];
+    const exported = await ExportRunner.runExport(task.id, mode, null, () => { const current=TaskStore.getById(task.id); if(current) progress.push(current.progress); });
+    assert.ok(progress.every((value,index)=>index===0 || value>=progress[index-1]), `Export progress regressed: ${progress.join(',')}`);
     assert.equal(exported?.status, 'done');
     assert.equal(exported.outputInspection?.decode, 'passed');
     assert.equal(exported.outputInspection?.filePath, exported.outputPath);
@@ -155,7 +157,9 @@ async function main() {
   const ttsDir = path.join(dir, 'tts'); fs.mkdirSync(ttsDir);
   ff(['-f', 'lavfi', '-i', 'sine=frequency=1000:sample_rate=44100', '-t', '1', '-c:a', 'libmp3lame', path.join(ttsDir, 'subtitle_0001.mp3')]);
   const dubTask = TaskStore.create({ fileName: path.basename(source), filePath: source, ...taskFiles(), ttsAudioDir: ttsDir, cleanTechnicalMetadata: true });
-  const dubbed = await DubbingRunner.runDubbing(dubTask.id, true);
+  const dubProgress: number[] = [];
+  const dubbed = await DubbingRunner.runDubbing(dubTask.id, true, () => { const current=TaskStore.getById(dubTask.id); if(current) dubProgress.push(current.progress); });
+  assert.ok(dubProgress.every((value,index)=>index===0 || value>=dubProgress[index-1]), `Dubbing progress regressed: ${dubProgress.join(',')}`);
   assert.equal(dubbed?.status, 'done');
   assert.equal(dubbed.outputInspection?.decode, 'passed');
   assert.equal(dubbed.outputInspection?.filePath, dubbed.outputPath);

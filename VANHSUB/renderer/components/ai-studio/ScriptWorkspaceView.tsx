@@ -37,6 +37,7 @@ import type {
   IdeaBlueprint,
 } from '../../types/aiStudio';
 import { useAiStudioStore } from '../../lib/store/aiStudioStore';
+import { hasUsableScript } from '../../../shared/aiStudioScript';
 
 export interface ExtendedScriptBeatLine extends ScriptBeatLine {
   beatType?: 'hook' | 'setup' | 'rising_action' | 'climax' | 'resolution' | 'call_to_action' | string;
@@ -175,6 +176,9 @@ export default function ScriptWorkspaceView({
   const [customPromptText, setCustomPromptText] = useState('');
 
   const scriptBusy = isRunning || isSavingScript || isEvaluating || isRefining;
+  const hasScript = hasUsableScript(lines);
+  const canApproveScript = hasScript && !scriptBusy && !session.manualMode &&
+    session.status === 'awaiting_approval' && session.currentStage === 2 && session.stages?.[2]?.status === 'success';
 
   // History for Undo
   const [history, setHistory] = useState<
@@ -183,11 +187,9 @@ export default function ScriptWorkspaceView({
 
   // Sync state when session changes
   useEffect(() => {
-    if (session.artifacts?.scriptLines && session.artifacts.scriptLines.length > 0) {
-      setLines(session.artifacts.scriptLines as ExtendedScriptBeatLine[]);
-    }
+    setLines((session.artifacts?.scriptLines || []) as ExtendedScriptBeatLine[]);
     setEvaluation(session.artifacts?.scriptEvaluation || null);
-  }, [session.artifacts?.scriptLines, session.artifacts?.scriptEvaluation]);
+  }, [session.sessionId, session.artifacts?.scriptLines, session.artifacts?.scriptEvaluation]);
 
   // Calculate statistics (word count & estimated duration)
   const stats = useMemo(() => {
@@ -233,7 +235,7 @@ export default function ScriptWorkspaceView({
 
   // Trigger AI evaluation
   const handleEvaluate = async () => {
-    if (scriptBusy || isEvaluating || lines.length === 0 || !window.vanhsub?.aiStudio?.evaluateScript) return;
+    if (scriptBusy || !hasScript || !window.vanhsub?.aiStudio?.evaluateScript) return;
     setIsEvaluating(true);
     try {
       const result = await window.vanhsub.aiStudio.evaluateScript({
@@ -256,7 +258,7 @@ export default function ScriptWorkspaceView({
 
   // Trigger AI improvement (Cải thiện điểm)
   const handleImproveScore = async () => {
-    if (scriptBusy || isRefining || lines.length === 0 || !window.vanhsub?.aiStudio?.refineScript) return;
+    if (scriptBusy || !hasScript || !window.vanhsub?.aiStudio?.refineScript) return;
     setIsRefining(true);
 
     try {
@@ -284,7 +286,7 @@ export default function ScriptWorkspaceView({
 
   // Submit custom refinement prompt (Yêu cầu của tôi)
   const handleCustomPromptSubmit = async () => {
-    if (scriptBusy || !customPromptText.trim() || !window.vanhsub?.aiStudio?.refineScript) return;
+    if (scriptBusy || !hasScript || !customPromptText.trim() || !window.vanhsub?.aiStudio?.refineScript) return;
     setCustomPromptModalOpen(false);
     setIsRefining(true);
 
@@ -512,7 +514,7 @@ export default function ScriptWorkspaceView({
               <button
                 type="button"
                 onClick={handleEvaluate}
-                disabled={scriptBusy || isEvaluating}
+                disabled={scriptBusy || !hasScript}
                 className="flex items-center gap-1 rounded-lg border border-border bg-[#0F1626] px-2.5 py-1 text-[11px] text-text hover:text-white transition cursor-pointer"
                 title="Chấm lại điểm bằng AI"
               >
@@ -585,7 +587,7 @@ export default function ScriptWorkspaceView({
             <button
               type="button"
               onClick={handleImproveScore}
-              disabled={scriptBusy || isRefining}
+              disabled={scriptBusy || !hasScript}
               className="inline-flex items-center gap-1.5 rounded-md bg-teal-600/90 hover:bg-teal-500 px-3.5 py-1.5 text-xs font-bold text-white shadow transition active:scale-95 disabled:opacity-50 cursor-pointer"
             >
               {isRefining ? (
@@ -604,7 +606,7 @@ export default function ScriptWorkspaceView({
             <button
               type="button"
               onClick={() => setCustomPromptModalOpen(true)}
-              disabled={scriptBusy || isRefining}
+              disabled={scriptBusy || !hasScript}
               className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface hover:bg-surface-2 px-3.5 py-1.5 text-xs font-semibold text-text transition active:scale-95 disabled:opacity-50 cursor-pointer"
             >
               <span>Yêu cầu của tôi</span>
@@ -1257,8 +1259,8 @@ export default function ScriptWorkspaceView({
           {/* Nút Tiếp tục: Duyệt kịch bản & Lồng tiếng */}
           <button
             type="button"
-            onClick={onProceedToVoice}
-            disabled={scriptBusy}
+            onClick={() => { if (canApproveScript) onProceedToVoice(); }}
+              disabled={!canApproveScript}
             className="inline-flex items-center gap-2 rounded-md bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 hover:brightness-110 px-4 py-2 text-xs font-bold text-white active:scale-95 transition cursor-pointer disabled:opacity-50"
             title="Duyệt kịch bản hiện tại và tiếp tục sang bước Lồng tiếng"
           >
@@ -1283,7 +1285,7 @@ export default function ScriptWorkspaceView({
           <button
             type="button"
             onClick={onRegenerateScript}
-            disabled={scriptBusy}
+              disabled={scriptBusy || session.manualMode}
             className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface hover:bg-surface-2 px-3.5 py-2 text-xs font-semibold text-text transition active:scale-95 cursor-pointer disabled:opacity-50"
           >
             <RotateCcw className="h-3.5 w-3.5 text-accent" />
@@ -1361,7 +1363,7 @@ export default function ScriptWorkspaceView({
               <button
                 type="button"
                 onClick={handleCustomPromptSubmit}
-                disabled={scriptBusy || !customPromptText.trim()}
+                disabled={scriptBusy || !hasScript || !customPromptText.trim()}
                 className="inline-flex items-center gap-1.5 rounded-lg bg-accent hover:bg-cyan-400 px-4 py-1.5 text-xs font-bold text-slate-950 transition disabled:opacity-50"
               >
                 <Send className="h-3 w-3" />

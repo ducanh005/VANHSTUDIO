@@ -10,6 +10,7 @@ import { SettingsStore } from '../../store/settingsStore';
 import { GoogleVeoSessionManager } from '../../veo/GoogleVeoSessionManager';
 import { GoogleVeoAntiSpamGuard } from '../../veo/GoogleVeoAntiSpamGuard';
 import { FlowMediaVerifier } from '../flow-engine/FlowMediaVerifier';
+import { FlowBridgeServer } from '../flow-engine/rpc/FlowBridgeServer';
 import type { ExecutionContext } from '../types';
 import type { ModelAdapter, VideoGenParams, VideoGenResult } from './types';
 
@@ -194,7 +195,7 @@ export class GoogleFlowAdapter implements ModelAdapter {
     const cookie = await sessionMgr.getEffectiveCookieString();
     const token = SettingsStore.get('veoSessionAuthToken')?.trim();
 
-    if (!cookie && !token) {
+    if (!cookie && !token && !FlowBridgeServer.getInstance().isConnected()) {
       throw new Error('[Google Flow] Chưa có phiên đăng nhập Google Flow. Vui lòng mở sảnh và đăng nhập.');
     }
 
@@ -220,6 +221,10 @@ export class GoogleFlowAdapter implements ModelAdapter {
 
       if (ctx.isCancelled()) {
         throw new Error('Tác vụ đã bị hủy bởi người dùng.');
+      }
+
+      if (browserResult?.error) {
+        throw new Error(`[Google Flow] ${browserResult.errorDetail || browserResult.error}`);
       }
 
       if (browserResult?.base64Data) {
@@ -816,6 +821,10 @@ export class GoogleFlowAdapter implements ModelAdapter {
 
         if (ctx.isCancelled()) {
           throw new Error('Tác vụ đã bị hủy bởi người dùng.');
+        }
+
+        if (result?.error) {
+          throw new Error(`[Google Flow] ${result.errorDetail || result.error}`);
         }
 
         if (result?.base64Data) {

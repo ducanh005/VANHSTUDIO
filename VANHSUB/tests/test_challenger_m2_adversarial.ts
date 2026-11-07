@@ -449,7 +449,7 @@ async function runAdversarialSuite() {
         "title": "Bí Ẩn Tam Giác Bermuda: Vùng Biển Tử Thần",
         "hookConcept": "Tại sao hàng trăm con tàu biến mất không dấu vết?",
         "narrativeAngle": "Khám phá khoa học kết hợp tài liệu giải mật",
-        "outline": ["[00:00 - 00:45] Mở đầu", "[00:45 - 01:30] Diễn biến"],
+        "outline": ["[00:00 - 00:45] Mở đầu", "[00:45 - 01:30] Diễn biến", "[01:30 - 02:00] Kết luận"],
         "thumbnailConcept": "Con tàu ma trôi dạt",
         "thumbnailPrompt": "Ghost ship floating in green glowing storm, 8k"
       }
@@ -457,7 +457,7 @@ async function runAdversarialSuite() {
     `;
     const bp1 = llmService.parseBlueprintJson(templateText, topic);
     assert.strictEqual(bp1.title, 'Bí Ẩn Tam Giác Bermuda: Vùng Biển Tử Thần');
-    assert.strictEqual(bp1.outline?.length, 2);
+    assert.strictEqual(bp1.outline?.length, 3);
 
     // 2. Trailing commas & unquoted keys repaired via jsonrepair
     const brokenJson = `
@@ -465,7 +465,8 @@ async function runAdversarialSuite() {
       {
         title: "Bí Ẩn Kim Tự Tháp",
         hookConcept: "Bí mật 4000 năm trước",
-        outline: ["Phần 1", "Phần 2",],
+        narrativeAngle: "Kiểm chứng các giả thuyết",
+        outline: ["Phần 1", "Phần 2", "Phần 3",],
       }
     `;
     const bp2 = llmService.parseBlueprintJson(brokenJson, 'Kim Tự Tháp');
@@ -477,17 +478,15 @@ async function runAdversarialSuite() {
 Hook: Bạn có biết điều gì ở đáy vực Mariana?
 Góc nhìn: Khoa học viễn tưởng
 Phân đoạn 1 [00:00 - 00:45]: Mở đầu
-Phân đoạn 2 [00:45 - 01:30]: Diễn biến`;
+Phân đoạn 2 [00:45 - 01:30]: Diễn biến
+Phân đoạn 3 [01:30 - 02:00]: Kết luận`;
     const bp3 = llmService.parseBlueprintJson(plainText, 'Đại Dương');
     assert(bp3.title.includes('Giải Mã Đại Dương Xanh'), `Expected title to include 'Giải Mã Đại Dương Xanh', got '${bp3.title}'`);
     assert(bp3.hookConcept.includes('Mariana'), `Expected hookConcept to include 'Mariana', got '${bp3.hookConcept}'`);
 
-    // 4. Complete unstructured noise -> safely falls back to default blueprint with topic without crashing
+    // 4. Unstructured noise must fail, not masquerade as provider-generated facts.
     const pureGarbage = 'Lorem ipsum dolor sit amet, consectetur adipiscing elit. Random raw logs 12345.';
-    const bp4 = llmService.parseBlueprintJson(pureGarbage, 'Chủ Đề Fallback');
-    assert.strictEqual(bp4.title, 'Chủ Đề Fallback');
-    assert(bp4.outline && bp4.outline.length >= 2);
-    assert(bp4.estimatedDurationSec > 0);
+    assert.throws(() => llmService.parseBlueprintJson(pureGarbage, 'Chủ Đề Fallback'), /schema/);
   });
 
   await advTest('ADV-INP-04', 'convertNarrationToVisualConcept strips speaker labels, raw quotes, and dialogue verbs cleanly', () => {

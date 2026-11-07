@@ -10,6 +10,7 @@
     "build": "npm run build:whisper-cpp && nextron build",
     "build:whisper-cpp": "cmake -S node_modules/nodejs-whisper/cpp/whisper.cpp -B node_modules/nodejs-whisper/cpp/whisper.cpp/build -DWHISPER_BUILD_EXAMPLES=ON -DWHISPER_BUILD_TESTS=OFF && cmake --build node_modules/nodejs-whisper/cpp/whisper.cpp/build --config Release --target whisper-cli --parallel 4",
     "build:main": "tsc --noEmit",
+    "build:check": "node scripts/build-check.cjs",
     "test": "tsx tests/test_srt_ocr_normalizer_and_translation.ts",
     "test:downloader": "tsx tests/test_douyin_media_inspection.ts && tsx tests/test_download_inspection_ui.tsx",
     "postinstall": "electron-builder install-app-deps"

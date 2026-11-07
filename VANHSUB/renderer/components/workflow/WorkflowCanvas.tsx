@@ -158,18 +158,31 @@ function FlowCanvasInner({
   const [veoMode, setVeoMode] = useState<'free_session' | 'api_key' | 'simulation'>('free_session');
   const [veoSessionStatus, setVeoSessionStatus] = useState<string>('unknown');
   const [veoEmail, setVeoEmail] = useState<string | null>(null);
+  const [isBridgeConnected, setIsBridgeConnected] = useState(false);
+  const statusRequestRunning = useRef(false);
   const [isOpeningGoogle, setIsOpeningGoogle] = useState(false);
 
   // Kiểm tra key & Veo status hiện tại
   const checkVeoStatus = useCallback(async () => {
+    if (statusRequestRunning.current) return;
+    statusRequestRunning.current = true;
+    try {
     if (typeof window !== 'undefined' && window.vanhsub?.veo?.status) {
       try {
-        const res = await window.vanhsub.veo.status();
+        const [res, bridge] = await Promise.all([
+          window.vanhsub.veo.status(),
+          window.vanhsub.veo.bridgeStatus().catch(() => ({ connected: false })),
+        ]);
+        setIsBridgeConnected(bridge.connected);
         if (res.mode) setVeoMode(res.mode);
         if (res.sessionStatus) setVeoSessionStatus(res.sessionStatus);
-        if (res.email) setVeoEmail(res.email);
-      } catch {}
+        setVeoEmail(res.email || null);
+      } catch { setIsBridgeConnected(false); setVeoSessionStatus('unknown'); setVeoEmail(null); }
     }
+    } finally { statusRequestRunning.current = false; }
+  }, []);
+
+  useEffect(() => {
     if (typeof window !== 'undefined' && window.vanhsub?.settings) {
       window.vanhsub.settings
         .get('geminiApiKey')
@@ -234,6 +247,10 @@ function FlowCanvasInner({
 
   useEffect(() => {
     checkVeoStatus();
+    // Like the header, refresh after pairing/reconnect without reopening Workflow AI.
+    const timer = setInterval(checkVeoStatus, 3000);
+    window.addEventListener('focus', checkVeoStatus);
+    return () => { clearInterval(timer); window.removeEventListener('focus', checkVeoStatus); };
   }, [checkVeoStatus]);
 
   // Thoát Zen Mode bằng phím Escape
@@ -410,9 +427,9 @@ function FlowCanvasInner({
     // Thông báo trạng thái Google Flow / Veo
     const hasVeoNode = nodes.some((n) => n.data?.nodeType === 'google-flow-video');
     if (hasVeoNode && veoMode === 'free_session') {
-      if (veoSessionStatus === 'expired' || veoSessionStatus === 'unauthenticated') {
+      if (!isBridgeConnected && (veoSessionStatus === 'expired' || veoSessionStatus === 'unauthenticated')) {
         toast.warning(
-          '⚠️ Chưa đăng nhập Session Google Flow: Sẽ tự động dùng bộ mô phỏng offline (FFmpeg) để workflow hoàn thành trọn vẹn. Bạn có thể bấm "Đăng nhập Google" trên thanh công cụ bất kỳ lúc nào để nhận video AI thật.',
+          'Chưa kết nối phiên Google Flow. Kết nối Chrome Bridge hoặc chọn API có quyền truy cập trước khi tạo video.',
           { duration: 6000 }
         );
       }
@@ -688,16 +705,16 @@ function FlowCanvasInner({
           {/* Google Login / Veo Session Integration */}
           <div className="flex items-center gap-1.5 bg-surface-2 p-0.5 rounded-md border border-border">
             {veoMode === 'free_session' ? (
-              veoSessionStatus === 'active' ? (
+              isBridgeConnected || veoSessionStatus === 'active' ? (
                 <button
                   onClick={() => setShowApiKeyModal(true)}
-                  title={`Google Veo đã kết nối (${veoEmail || 'Tài khoản hoạt động'}). Nhấn để quản lý.`}
+                  title={isBridgeConnected ? 'Chrome Bridge đã xác thực. Quyền tạo media được kiểm tra riêng khi chạy.' : `Phiên Google (${veoEmail || 'đã lưu'}). Nhấn để quản lý.`}
                   className="flex items-center gap-1.5 px-2 py-1 rounded bg-surface hover:bg-surface-3 border border-border text-text text-xs font-medium transition-colors cursor-pointer"
                 >
                   <GoogleIcon className="w-3.5 h-3.5" />
                   <span className="w-1.5 h-1.5 rounded-full bg-success shrink-0" />
                   <span className="max-w-[110px] truncate text-[11px]">
-                    {veoEmail ? veoEmail.split('@')[0] : 'Google Sẵn sàng'}
+                    {isBridgeConnected ? 'Chrome: Đã kết nối' : veoEmail ? veoEmail.split('@')[0] : 'Phiên Google'}
                   </span>
                 </button>
               ) : (
