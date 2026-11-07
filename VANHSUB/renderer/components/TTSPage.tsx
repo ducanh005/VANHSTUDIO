@@ -50,7 +50,7 @@ function formatSeconds(sec: number): string {
 }
 
 /** Câu nghe thử cố định — bấm nghe ngay, không cần đọc file SRT */
-const SAMPLE_TEXT = 'Xin chào, bạn đang nghe thử giọng đọc tại Vanh sub.';
+const SAMPLE_TEXT = 'Xin chào, bạn đang nghe thử giọng đọc tại VanhStudio.';
 
 export default function TTSPage({ tasks, selectedTaskId: propSelectedTaskId, onSelectTaskId, isActive = true }: Props) {
   const [internalTaskId, setInternalTaskId] = useState<string | null>(null);

@@ -300,7 +300,7 @@ export class OcrRunner {
 
         const pool = await OcrPool.create(
           language,
-          path.join(app.getPath('userData'), 'tessdata'),
+          path.join(typeof app?.getPath === 'function' ? app.getPath('userData') : process.cwd(), 'tessdata'),
           undefined,
           'line',
         );

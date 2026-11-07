@@ -70,10 +70,10 @@ export const RAPIDOCR_INSTALL_HINT =
 
 /** Đường dẫn script sidecar — dev chạy từ nguồn, bản build từ extraResources */
 export function resolvePaddleScriptPath(): string {
-  if (app.isPackaged) {
+  if (app?.isPackaged) {
     return path.join(process.resourcesPath, 'paddle', 'paddle_server.py');
   }
-  return path.join(app.getAppPath(), 'main', 'ocr', 'paddle', 'paddle_server.py');
+  return path.join(typeof app?.getAppPath === 'function' ? app.getAppPath() : process.cwd(), 'main', 'ocr', 'paddle', 'paddle_server.py');
 }
 
 /** Kiểm tra python + rapidocr đã sẵn sàng chưa (như checkDemucs của Demucs) */

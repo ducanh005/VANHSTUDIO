@@ -696,8 +696,8 @@ export async function burnHardsub(options: RenderOptions): Promise<void> {
       '-pix_fmt yuv420p',
     ]);
 
-    if (formatOptions?.fps) {
-      command.outputOptions([`-r ${formatOptions.fps}`]);
+    if (Number.isFinite(Number(formatOptions?.fps)) && Number(formatOptions?.fps) > 0) {
+      command.outputOptions([`-r ${Number(formatOptions?.fps)}`]);
     }
     if (formatOptions?.bitrateKbps && formatOptions.bitrateKbps > 0) {
       command.outputOptions([`-b:v ${formatOptions.bitrateKbps}k`]);

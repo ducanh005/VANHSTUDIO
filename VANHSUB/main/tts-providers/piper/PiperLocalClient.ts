@@ -15,7 +15,7 @@ let active = false;
 /** Only known installation slots; renderer cannot select an arbitrary executable/script. */
 function installedRuntime() {
   const local = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
-  for (const app of ['VANHSUB', 'VANHSUB-InternalBeta-20261016']) {
+  for (const app of ['VanhStudio', 'VANHSUB', 'VANHSUB-InternalBeta-20261016']) {
     const root = path.join(local, app, 'Local TTS Piper');
     if (fs.existsSync(path.join(root, 'venv', 'Scripts', 'python.exe'))) return root;
   }

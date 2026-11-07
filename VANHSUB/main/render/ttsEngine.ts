@@ -8,6 +8,8 @@ import { VoiceSampleStore } from '../store/voiceSampleStore';
 import { getSharedTikTokProvider } from '../tts-providers/tiktok/sessionStores';
 import { EdgeTTSClient } from '../tts-providers/edge/EdgeTTSClient';
 import { isTtsAccessDenied } from '../tts-providers/edge/edgeSpeech';
+import { PIPER_VI_VOICE, piperLocalStatus, synthesizePiperSpeech } from '../tts-providers/piper/PiperLocalClient';
+import os from 'os';
 import { CancelledError } from '../lib/cancel';
 import { parseSrtStrict, formatMs } from '../lib/srt';
 import { getFfmpegBinPath, getMediaDurationSec } from '../asr/audioExtractor';
@@ -288,6 +290,24 @@ async function generateAudio(
       return Buffer.from(await response.arrayBuffer());
     } finally { if (cancelPoll) clearInterval(cancelPoll); }
   } catch (err) {
+    if (voice === PIPER_VI_VOICE && piperLocalStatus().ready) {
+      const controller = new AbortController();
+      const cancelPoll = shouldStop ? setInterval(() => { if (shouldStop()) controller.abort(); }, 100) : undefined;
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vanhstudio-piper-mp3-'));
+      try {
+        const ratePct = Math.round((Math.max(0.5, Math.min(2.0, speed)) - 1.0) * 100);
+        const rateStr = ratePct >= 0 ? `+${ratePct}%` : `${ratePct}%`;
+        const wavBuf = await synthesizePiperSpeech(text, PIPER_VI_VOICE, rateStr, controller.signal);
+        const wavPath = path.join(tmpDir, 'speech.wav');
+        const mp3Path = path.join(tmpDir, 'speech.mp3');
+        fs.writeFileSync(wavPath, wavBuf);
+        await execFileAsync(getFfmpegBinPath(), ['-v', 'error', '-y', '-i', wavPath, '-codec:a', 'libmp3lame', '-b:a', '96k', mp3Path]);
+        return fs.readFileSync(mp3Path);
+      } finally {
+        if (cancelPoll) clearInterval(cancelPoll);
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    }
     console.error('VietTTS generation error:', err);
     throw new Error(`Không thể tạo audio qua VietTTS: ${err}`);
   }
@@ -646,7 +666,7 @@ export async function getAvailableVoices(): Promise<string[]> {
   } catch {
     // server không chạy — chỉ trả về giọng mẫu
   }
-  return sampleVoices;
+  return piperLocalStatus().ready ? [...sampleVoices, PIPER_VI_VOICE] : sampleVoices;
 }
 
 /**
@@ -675,7 +695,7 @@ export async function checkVietTtsConnection(): Promise<boolean> {
     });
     return response.ok;
   } catch {
-    return false;
+    return piperLocalStatus().ready;
   }
 }
 
