@@ -25,8 +25,10 @@ Chạy tay: python paddle_server.py --job job.json
 import argparse
 import json
 import logging
+import re
 import sys
 import warnings
+from difflib import SequenceMatcher
 from pathlib import Path
 
 warnings.simplefilter("ignore")
@@ -359,6 +361,34 @@ class TextTrack:
         return [float(np.mean(xs)), float(np.mean(ys)), float(np.mean(ws)), float(np.mean(hs))]
 
 
+def normalize_fullwidth(text):
+    """Chuyển ký tự ASCII fullwidth (Ａ-Ｚ, ０-９...) về ASCII chuẩn để lọc watermark/noise."""
+    if not text:
+        return ""
+    out = []
+    for ch in text:
+        code = ord(ch)
+        if 0xFF01 <= code <= 0xFF5E:
+            out.append(chr(code - 0xFEE0))
+        elif code == 0x3000:
+            out.append(" ")
+        else:
+            out.append(ch)
+    return "".join(out).strip()
+
+
+CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff\uac00-\ud7af]")
+ALNUM_RE = re.compile(r"[^a-z0-9\u00c0-\u024f\u1e00-\u1eff\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff\uac00-\ud7af]+")
+
+
+def has_cjk(text):
+    return bool(CJK_RE.search(text or ""))
+
+
+def get_alnum_key(text):
+    return ALNUM_RE.sub("", normalize_fullwidth(text).lower())
+
+
 def select_most_stable_text(candidates):
     """
     candidates: list of (text, conf, img)
@@ -367,22 +397,23 @@ def select_most_stable_text(candidates):
     if not candidates:
         return "", 0.0, None
     if len(candidates) == 1:
-        return candidates[0][0], candidates[0][1], candidates[0][2]
+        return normalize_fullwidth(candidates[0][0]), candidates[0][1], candidates[0][2]
 
     # Nhóm theo chuỗi chuẩn hoá
     groups = {}
     for text, conf, img in candidates:
-        if not text:
+        norm_text = normalize_fullwidth(text)
+        if not norm_text:
             continue
-        key = text.strip().lower()
+        key = norm_text.strip().lower()
         if key not in groups:
-            groups[key] = {"original": text, "count": 0, "total_conf": 0.0, "best_conf": 0.0, "img": img}
+            groups[key] = {"original": norm_text, "count": 0, "total_conf": 0.0, "best_conf": 0.0, "img": img}
         groups[key]["count"] += 1
         groups[key]["total_conf"] += conf
         if conf > groups[key]["best_conf"]:
             groups[key]["best_conf"] = conf
             groups[key]["img"] = img
-            groups[key]["original"] = text
+            groups[key]["original"] = norm_text
 
     if not groups:
         return "", 0.0, None
@@ -392,6 +423,103 @@ def select_most_stable_text(candidates):
     best = groups[best_key]
     avg_conf = best["total_conf"] / max(1, best["count"])
     return best["original"], max(avg_conf, best["best_conf"]), best["img"]
+
+
+def filter_recognized_watermarks(recognized_tracks, total_frames, frame_h, ocr_mode):
+    """
+    Phát hiện và loại bỏ watermark lặp lại xuyên suốt video (bao gồm cả watermark ở đáy khung hình
+    như 'ANGELANJ', 'ANGELANI' bị chia nhỏ thành nhiều track do nền video thay đổi độ sáng).
+    """
+    if not recognized_tracks or ocr_mode == "full" or total_frames < 12:
+        return recognized_tracks
+
+    # 1. Gom cụm các track có chuỗi chữ cái/số giống nhau (hoặc là chuỗi con của nhau tại cùng vùng y)
+    clusters = []
+    bucket_px = max(24.0, frame_h * 0.045)
+
+    for tr in recognized_tracks:
+        key = get_alnum_key(tr.text)
+        if not key:
+            continue
+        y0 = tr.avg_rect[1]
+        placed = False
+        for cl in clusters:
+            if abs(y0 - cl["avg_y"]) <= bucket_px * 1.5:
+                ref_key = cl["key"]
+                is_sub = (len(key) >= 3 and len(ref_key) >= 4 and (key in ref_key or ref_key in key))
+                sim = SequenceMatcher(None, key, ref_key).ratio() if (len(key) >= 4 and len(ref_key) >= 4) else 0.0
+                if key == ref_key or is_sub or sim >= 0.72:
+                    cl["tracks"].append(tr)
+                    cl["frames"].update(tr.frames.keys())
+                    cl["first_frame"] = min(cl["first_frame"], tr.first_frame)
+                    cl["last_frame"] = max(cl["last_frame"], tr.last_frame)
+                    cl["avg_y"] = float(np.mean([t.avg_rect[1] for t in cl["tracks"]]))
+                    if len(key) > len(ref_key) and not has_cjk(key):
+                        cl["key"] = key
+                    placed = True
+                    break
+        if not placed:
+            clusters.append({
+                "key": key,
+                "tracks": [tr],
+                "frames": set(tr.frames.keys()),
+                "first_frame": tr.first_frame,
+                "last_frame": tr.last_frame,
+                "avg_y": y0,
+            })
+
+    watermark_track_ids = set()
+    watermark_keys = set()
+    watermark_y_bands = []
+
+    for cl in clusters:
+        span_ratio = (cl["last_frame"] - cl["first_frame"] + 1) / max(1.0, float(total_frames))
+        frame_ratio = len(cl["frames"]) / max(1.0, float(total_frames))
+        track_count = len(cl["tracks"])
+
+        # Một cụm được xác định là watermark tĩnh/lặp lại nếu:
+        # - Trải dài >= 25% thời lượng video VÀ (xuất hiện ở >= 3 track rời rạc HOẶC chiếm >= 14% tổng số frame)
+        # - Hoặc chiếm >= 25% tổng số frame của toàn video
+        if (span_ratio >= 0.25 and (track_count >= 3 or frame_ratio >= 0.14)) or frame_ratio >= 0.25:
+            for tr in cl["tracks"]:
+                watermark_track_ids.add(tr.track_id)
+            if len(cl["key"]) >= 4:
+                watermark_keys.add(cl["key"])
+            watermark_y_bands.append(cl["avg_y"])
+
+    # Nếu phát hiện dải y chứa watermark ở sát đáy hoặc đỉnh, kiểm tra thêm các mảnh nhiễu cùng dải y
+    filtered = []
+    for tr in recognized_tracks:
+        if tr.track_id in watermark_track_ids:
+            continue
+        key = get_alnum_key(tr.text)
+        if not key:
+            continue
+
+        # Nếu text của track nằm cùng dải y của watermark và chứa/trùng với watermark key -> bỏ
+        y0 = tr.avg_rect[1]
+        in_wm_band = any(abs(y0 - wy) <= bucket_px * 1.2 for wy in watermark_y_bands)
+        if in_wm_band and not has_cjk(tr.text):
+            if any(wk in key or (len(key) >= 2 and key in wk) or SequenceMatcher(None, key, wk).ratio() >= 0.65 for wk in watermark_keys):
+                continue
+
+        # Nếu dòng phụ đề thật bị dính kèm watermark token (ví dụ: "老妈去接放学的妹妹了 ANGELANJ"), cắt bỏ watermark token
+        cleaned_text = tr.text
+        for wk in watermark_keys:
+            if len(wk) >= 5 and wk in key and len(key) > len(wk) + 1:
+                pattern = re.compile(r"\s*[A-Za-z0-9]*" + re.escape(wk[:4]) + r"[A-Za-z0-9\s]*$", re.IGNORECASE)
+                stripped = pattern.sub("", cleaned_text).strip()
+                if stripped:
+                    cleaned_text = stripped
+        tr.text = cleaned_text
+
+        # Lọc nhiễu 1 ký tự Latin/số xuất hiện ngắn (<= 2 frame) không phải chữ CJK
+        if len(tr.frames) <= 2 and not has_cjk(tr.text) and len(get_alnum_key(tr.text)) <= 1:
+            continue
+
+        filtered.append(tr)
+
+    return filtered
 
 
 def run_pipeline(job):
@@ -609,6 +737,72 @@ def run_pipeline(job):
     # =========================================================================
     emit({"type": "stage", "name": "recognize", "msg": f"Đang nhận diện chữ trên {len(valid_tracks)} đoạn phụ đề..."})
 
+    # Tự động dò và chuyển sang model CJK (LangRec.CH) nếu cấu hình đang để LATIN (vie/eng)
+    # nhưng video thực tế là phụ đề chữ Hán/Nhật (khiến model LATIN chỉ đọc ra dấu câu '+', '?', '.' hoặc ký tự rời rạc)
+    if rec_lang == getattr(LangRec, "LATIN", None) and len(valid_tracks) >= 2:
+        try:
+            probe_candidates = [
+                tr for tr in valid_tracks
+                if tr.avg_rect[2] >= max(45.0, frame_w * 0.08)
+                and (tr.avg_rect[1] + tr.avg_rect[3]) / max(1.0, frame_h) <= 0.88
+            ]
+            if not probe_candidates:
+                probe_candidates = [tr for tr in valid_tracks if tr.avg_rect[2] >= 40.0]
+            probe_candidates.sort(key=lambda tr: len(tr.frames) * tr.avg_rect[2], reverse=True)
+            probe_sample = probe_candidates[:6]
+
+            if probe_sample:
+                ch_engine = build_engine(
+                    LangRec.CH,
+                    job.get("detVersion", "PPOCRV5"),
+                    job.get("recVersion", "PPOCRV5"),
+                    job.get("modelType", "MOBILE"),
+                    float(job.get("textScore", 0.25)),
+                )
+                cjk_wins = 0
+                valid_probes = 0
+                for ptr in probe_sample:
+                    if not ptr.candidate_crops:
+                        continue
+                    best_raw = max(ptr.candidate_crops, key=lambda c: c[0])[2]
+                    if best_raw is None or best_raw.size == 0:
+                        continue
+                    valid_probes += 1
+                    probe_img = enhance(best_raw)
+
+                    lat_txt, lat_conf = "", 0.0
+                    ch_txt, ch_conf = "", 0.0
+                    try:
+                        r_lat = engine(probe_img, use_det=False, use_cls=True, use_rec=True)
+                        if getattr(r_lat, "txts", None) and getattr(r_lat, "scores", None):
+                            lat_txt = str(r_lat.txts[0]).strip()
+                            lat_conf = float(r_lat.scores[0])
+                    except Exception:
+                        pass
+
+                    try:
+                        r_ch = ch_engine(probe_img, use_det=False, use_cls=True, use_rec=True)
+                        if getattr(r_ch, "txts", None) and getattr(r_ch, "scores", None):
+                            ch_txt = str(r_ch.txts[0]).strip()
+                            ch_conf = float(r_ch.scores[0])
+                    except Exception:
+                        pass
+
+                    cjk_chars = len(CJK_RE.findall(ch_txt))
+                    lat_alnum = len(get_alnum_key(lat_txt))
+                    if cjk_chars >= 2 and ch_conf >= 0.72 and (ch_conf > lat_conf + 0.05 or lat_alnum <= 2):
+                        cjk_wins += 1
+
+                if valid_probes > 0 and (cjk_wins >= 2 or (valid_probes <= 2 and cjk_wins >= 1)):
+                    engine = ch_engine
+                    rec_lang = LangRec.CH
+                    emit({
+                        "type": "warning",
+                        "msg": "Phát hiện phụ đề chữ Hán/Nhật (CJK) trong video — tự động chuyển bộ nhận diện sang CJK để đọc chính xác.",
+                    })
+        except Exception:
+            pass
+
     scale = (frame_w / video_w) if video_w > 0 else 1.0
     offset_px = offset_ratio * video_h if video_h > 0 else 0.0
 
@@ -686,6 +880,9 @@ def run_pipeline(job):
         recognized_tracks.append(track)
 
         emit({"type": "progress", "stage": "recognize", "done": t_idx + 1, "total": total_valid})
+
+    # Hậu kiểm lọc watermark lặp lại (kể cả watermark nằm ở đáy khung hình bị đứt quãng)
+    recognized_tracks = filter_recognized_watermarks(recognized_tracks, total_frames, frame_h, ocr_mode)
 
     # =========================================================================
     # Giai đoạn 5: Format Output JSONL theo khung hình

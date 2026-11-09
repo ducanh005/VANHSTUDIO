@@ -1,3 +1,4 @@
+import { isOcrGarbageLine } from '../lib/subtitleSanitizer';
 import { serializeSrt, type SrtLine } from '../lib/srt';
 import type { OcrFrameResult } from './ocrEngine';
 
@@ -491,8 +492,13 @@ export function deduplicateSubtitleSegments(
     const text = normalizeText(seg.text);
     if (!text) continue;
 
-    // Lọc nhiễu quá ngắn: thời lượng < 250ms và độ dài <= 2 ký tự (ví dụ: '.', '-', 'a')
-    if (seg.endMs - seg.startMs < 250 && text.length <= 2) {
+    // Lọc rác OCR (ký tự đơn lẻ, dấu trôi nổi, nhiễu khung hình)
+    if (isOcrGarbageLine({ id: 'temp', startMs: seg.startMs, endMs: seg.endMs, text }, { minDurationMs: 0 })) {
+      continue;
+    }
+    const alnum = text.replace(/[^\p{L}\p{N}]/gu, '');
+    const isCjk = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(text);
+    if (!isCjk && alnum.length <= 1) {
       continue;
     }
 
@@ -570,7 +576,41 @@ export function deduplicateSubtitleSegments(
     }
   }
 
-  return result.map((s, index) => ({
+  // Lọc watermark / channel handle lặp lại nhiều lần xuyên suốt video (ví dụ: ANGELANJ...)
+  const textOccurrences = new Map<string, { count: number; firstMs: number; lastMs: number }>();
+  for (const r of result) {
+    const k = mergeKey(r.text);
+    if (!k || /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(r.text)) continue;
+    const occ = textOccurrences.get(k) || { count: 0, firstMs: r.startMs, lastMs: r.endMs };
+    occ.count += 1;
+    occ.firstMs = Math.min(occ.firstMs, r.startMs);
+    occ.lastMs = Math.max(occ.lastMs, r.endMs);
+    textOccurrences.set(k, occ);
+  }
+
+  const watermarkKeys = new Set<string>();
+  const totalVideoMs = result.length > 0 ? (result[result.length - 1].endMs - result[0].startMs) : 0;
+  for (const [k, occ] of textOccurrences.entries()) {
+    const spanMs = occ.lastMs - occ.firstMs;
+    if (occ.count >= 4 || (totalVideoMs > 15000 && spanMs >= totalVideoMs * 0.25 && occ.count >= 3)) {
+      watermarkKeys.add(k);
+    }
+  }
+
+  const filteredResult = result.filter((r) => {
+    const k = mergeKey(r.text);
+    if (k && watermarkKeys.has(k)) return false;
+    return true;
+  });
+
+  // Đảm bảo không chồng lấn timestamp giữa các dòng phụ đề kề nhau trong danh sách cuối cùng
+  for (let i = 0; i < filteredResult.length - 1; i++) {
+    if (filteredResult[i].endMs > filteredResult[i + 1].startMs) {
+      filteredResult[i].endMs = filteredResult[i + 1].startMs;
+    }
+  }
+
+  return filteredResult.map((s, index) => ({
     id: `line-${index}`,
     startMs: Math.max(0, s.startMs),
     endMs: s.endMs,
@@ -745,7 +785,11 @@ function levenshteinWithin(a: string, b: string, maxDist: number): boolean {
 
 /** Chuẩn hoá text OCR: gộp dòng/khoảng trắng, sửa dấu câu dính khoảng trắng */
 function normalizeText(raw: string): string {
-  return raw
+  if (!raw) return '';
+  const s = raw
+    .replace(/[\uFF01-\uFF5E]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
+    .replace(/\u3000/g, ' ');
+  return s
     .replace(/\s+/g, ' ')
     .replace(/\s+([,.!?;:…])/g, '$1')
     // Tesseract chèn space giữa từng chữ Hán/Nhật — ghép lại thành từ liên tiếp

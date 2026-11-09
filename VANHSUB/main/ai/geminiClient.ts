@@ -1,3 +1,4 @@
+import https from 'https';
 import OpenAI from 'openai';
 import { jsonrepair } from 'jsonrepair';
 import { SettingsStore } from '../store/settingsStore';
@@ -5,6 +6,172 @@ import { isLineUntranslated } from '../lib/subtitleSanitizer';
 
 // Gemini tương thích endpoint OpenAI — dùng lại SDK openai theo quyết định kỹ thuật đã chốt.
 const GEMINI_OPENAI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/';
+
+/**
+ * Danh sách model dự phòng tốc độ cao khi model chính bị quá tải (503),
+ * timeout, hết quota (429) hoặc không khả dụng (404).
+ */
+export const GEMINI_FALLBACK_MODELS = [
+  'gemini-3.5-flash-lite',
+  'gemini-3.6-flash',
+  'gemini-3.1-flash-lite',
+  'gemini-3.5-flash',
+  'gemini-3.8-flash',
+] as const;
+
+let cachedWorkingFallback: { requestedModel: string; workingModel: string; expiresAt: number } | null = null;
+
+/**
+ * Chuẩn hoá tên model: tự động nâng cấp các model thế hệ cũ (1.5 / 2.0 / 2.5 đã ngừng hỗ trợ)
+ * sang model khả dụng hiện tại.
+ */
+export function resolveEffectiveGeminiModel(rawModel?: string): string {
+  const trimmed = (rawModel || '').trim();
+  if (!trimmed) return 'gemini-3.8-flash';
+  if (/^gemini-(1\.5|2\.0|2\.5)-/i.test(trimmed)) {
+    return 'gemini-3.5-flash-lite';
+  }
+  return trimmed;
+}
+
+function isRetryableOrFallbackGeminiError(err: any): boolean {
+  const status = err?.status ?? err?.response?.status;
+  if (status === 401 || status === 403) return false;
+  if (status === 404 || status === 429 || status === 500 || status === 502 || status === 503 || status === 504) {
+    return true;
+  }
+  const msg = String(err?.message || '');
+  if (status === 400 && /model|thinking level|not supported|not available|no longer available/i.test(msg)) {
+    return true;
+  }
+  if (
+    err?.code === 'ETIMEDOUT' ||
+    err?.code === 'ECONNRESET' ||
+    err?.code === 'ECONNABORTED' ||
+    err?.name === 'TimeoutError' ||
+    err?.name === 'APIConnectionTimeoutError' ||
+    err?.name === 'APIConnectionError' ||
+    /timed?\s*out|timeout|high demand|unavailable|overloaded|socket hang up/i.test(msg)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Custom fetch dùng https.request (IPv4, Connection: close) cho Gemini API
+ * nhằm tránh lỗi treo keep-alive socket / IPv6 happy-eyeballs của undici trong Electron trên Windows.
+ */
+const geminiIpv4Fetch: typeof fetch = async (input: any, init?: any): Promise<Response> => {
+  const urlStr = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+  const u = new URL(urlStr);
+  const method = init?.method || 'POST';
+  const rawHeaders: Record<string, string> = {};
+
+  if (init?.headers) {
+    if (typeof init.headers.forEach === 'function') {
+      init.headers.forEach((v: string, k: string) => {
+        rawHeaders[k] = v;
+      });
+    } else if (Array.isArray(init.headers)) {
+      for (const [k, v] of init.headers) rawHeaders[k] = String(v);
+    } else if (typeof init.headers === 'object') {
+      for (const [k, v] of Object.entries(init.headers)) {
+        if (v !== undefined && v !== null) rawHeaders[k] = String(v);
+      }
+    }
+  }
+
+  const bodyStr =
+    init?.body === undefined || init?.body === null
+      ? ''
+      : typeof init.body === 'string'
+        ? init.body
+        : Buffer.isBuffer(init.body)
+          ? init.body.toString('utf8')
+          : String(init.body);
+  const bodyBuf = Buffer.from(bodyStr, 'utf8');
+
+  rawHeaders['Connection'] = 'close';
+  if (bodyBuf.length > 0) {
+    rawHeaders['Content-Length'] = String(bodyBuf.length);
+  }
+
+  return new Promise<Response>((resolve, reject) => {
+    const signal: AbortSignal | undefined = init?.signal;
+    if (signal?.aborted) {
+      const abortErr = new Error('Request timed out.');
+      abortErr.name = 'AbortError';
+      return reject(abortErr);
+    }
+
+    const req = https.request(
+      {
+        hostname: u.hostname,
+        port: u.port ? Number(u.port) : 443,
+        path: u.pathname + u.search,
+        method,
+        family: 4,
+        agent: false,
+        headers: rawHeaders,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+        res.on('end', () => {
+          cleanup();
+          const resBody = Buffer.concat(chunks);
+          const resHeaders = new Headers();
+          for (const [k, v] of Object.entries(res.headers)) {
+            if (Array.isArray(v)) {
+              for (const item of v) resHeaders.append(k, item);
+            } else if (typeof v === 'string') {
+              resHeaders.set(k, v);
+            }
+          }
+          resolve(
+            new Response(resBody, {
+              status: res.statusCode || 200,
+              statusText: res.statusMessage || '',
+              headers: resHeaders,
+            })
+          );
+        });
+        res.on('error', (err) => {
+          cleanup();
+          reject(err);
+        });
+      }
+    );
+
+    const onAbort = () => {
+      const abortErr = new Error('Request timed out.');
+      abortErr.name = 'AbortError';
+      req.destroy(abortErr);
+      reject(abortErr);
+    };
+
+    const cleanup = () => {
+      if (signal) {
+        signal.removeEventListener('abort', onAbort);
+      }
+    };
+
+    if (signal) {
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    req.on('error', (err) => {
+      cleanup();
+      reject(err);
+    });
+
+    if (bodyBuf.length > 0) {
+      req.write(bodyBuf);
+    }
+    req.end();
+  });
+};
 
 export function friendlyGeminiError(err: any): string {
   const status = err?.status ?? err?.response?.status;
@@ -14,16 +181,25 @@ export function friendlyGeminiError(err: any): string {
   if (status === 429) {
     return 'Vượt giới hạn tốc độ của Gemini (rate limit). Đợi vài giây rồi thử lại.';
   }
+  if (status === 503) {
+    return 'Máy chủ Gemini đang quá tải tạm thời (503 High Demand). Hãy thử lại hoặc chọn model Gemini 3.5 Flash Lite.';
+  }
   if (status === 404) {
     return `Model "${SettingsStore.get('geminiModel')}" không khả dụng với key này.`;
   }
-  if (err?.code === 'ETIMEDOUT' || err?.name === 'TimeoutError' || err?.code === 'ECONNABORTED') {
+  if (
+    err?.code === 'ETIMEDOUT' ||
+    err?.name === 'TimeoutError' ||
+    err?.name === 'APIConnectionTimeoutError' ||
+    err?.code === 'ECONNABORTED' ||
+    /timed?\s*out/i.test(String(err?.message || ''))
+  ) {
     return 'Gemini phản hồi quá chậm (timeout) — kiểm tra kết nối mạng rồi thử lại.';
   }
   return `Lỗi gọi Gemini: ${err?.message || 'không xác định'}`;
 }
 
-/** Tạo client OpenAI trỏ tới Gemini. Ném lỗi thân thiện nếu chưa có API key. */
+/** Tạo client OpenAI trỏ tới Gemini kèm cơ chế tự động dự phòng model khi quá tải/timeout. */
 export function createGeminiClient(): { client: OpenAI; model: string } {
   const apiKey = SettingsStore.get('geminiApiKey').trim();
   if (!apiKey) {
@@ -31,13 +207,84 @@ export function createGeminiClient(): { client: OpenAI; model: string } {
       'Chưa cấu hình Gemini API key. Vào Cài đặt (hoặc bấm nút "Gemini API" ở màn hình hiệu đính) để nhập key — lấy miễn phí tại aistudio.google.com.'
     );
   }
-  const model = SettingsStore.get('geminiModel') || 'gemini-3.8-flash';
+  const rawModel = SettingsStore.get('geminiModel') || 'gemini-3.8-flash';
+  const model = resolveEffectiveGeminiModel(rawModel);
   const client = new OpenAI({
     apiKey,
     baseURL: GEMINI_OPENAI_BASE_URL,
-    timeout: 120_000, // Tăng request timeout lên 120s (2 phút) để multi-item batches và reasoning hoàn tất tin cậy
-    maxRetries: 0, // retry tự quản lý ở từng module (translator cần kiểm soát backoff riêng)
+    timeout: 30_000,
+    maxRetries: 0, // retry tự quản lý ở từng module kèm fallback model
+    fetch: geminiIpv4Fetch,
   });
+
+  const completions = client.chat.completions as any;
+  completions.create = async (params: any, options?: any) => {
+    const protoCreate = Object.getPrototypeOf(completions).create;
+    const requestedModel = resolveEffectiveGeminiModel(params?.model || model);
+
+    const now = Date.now();
+    const preferredStartModel =
+      cachedWorkingFallback &&
+      cachedWorkingFallback.requestedModel === requestedModel &&
+      cachedWorkingFallback.expiresAt > now
+        ? cachedWorkingFallback.workingModel
+        : requestedModel;
+
+    const candidates: string[] = [preferredStartModel];
+    for (const fb of GEMINI_FALLBACK_MODELS) {
+      if (!candidates.includes(fb)) {
+        candidates.push(fb);
+      }
+    }
+
+    let lastErr: any = null;
+    for (let i = 0; i < candidates.length; i++) {
+      const candidateModel = candidates[i];
+      const isGemini3Or4 = /gemini-3|gemini-4|gemini-flash-latest|gemini-pro-latest/i.test(candidateModel);
+      const nextParams: any = {
+        ...params,
+        model: candidateModel,
+      };
+      if (isGemini3Or4) {
+        if (!nextParams.reasoning_effort) nextParams.reasoning_effort = 'low';
+        if (nextParams.temperature === undefined) nextParams.temperature = 1.0;
+      } else {
+        delete nextParams.reasoning_effort;
+      }
+
+      // Giới hạn timeout ngắn hơn (12s) cho model đầu nếu còn model dự phòng phía sau
+      // để tránh treo lâu khi gemini-3.8-flash bị quá tải 503/timeout.
+      const attemptOptions =
+        i < candidates.length - 1 && !options?.timeout
+          ? { ...options, timeout: 12_000 }
+          : options;
+
+      try {
+        const res = await protoCreate.call(completions, nextParams, attemptOptions);
+        if (candidateModel !== requestedModel) {
+          cachedWorkingFallback = {
+            requestedModel,
+            workingModel: candidateModel,
+            expiresAt: Date.now() + 10 * 60 * 1000,
+          };
+          console.log(
+            `[Gemini] Đã tự động chuyển sang model dự phòng ổn định "${candidateModel}" (do "${requestedModel}" đang quá tải/timeout).`
+          );
+        }
+        return res;
+      } catch (err: any) {
+        lastErr = err;
+        if (!isRetryableOrFallbackGeminiError(err) || i === candidates.length - 1) {
+          throw err;
+        }
+        console.warn(
+          `[Gemini] Model "${candidateModel}" phản hồi lỗi (${err?.status || err?.message || 'timeout'}) — tự động chuyển sang model dự phòng "${candidates[i + 1]}"...`
+        );
+      }
+    }
+    throw lastErr;
+  };
+
   return { client, model };
 }
 

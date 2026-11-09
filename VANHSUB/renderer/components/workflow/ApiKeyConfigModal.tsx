@@ -283,14 +283,14 @@ export default function ApiKeyConfigModal({
         toast.success('Kết nối Google Gemini AI thành công!');
         if (onKeyUpdated) onKeyUpdated(true);
       } else {
-        if (key.startsWith('AIza') && key.length >= 35) {
-          setApiKeyTestResult({ ok: true, message: 'Định dạng Key hợp lệ chuẩn Google AI Studio!' });
+        if ((key.startsWith('AIza') || key.startsWith('AQ.')) && key.length >= 35) {
+          setApiKeyTestResult({ ok: true, message: 'Định dạng Key hợp lệ chuẩn Google AI Studio / Cloud!' });
           toast.success('Định dạng key hợp lệ!');
           if (onKeyUpdated) onKeyUpdated(true);
         } else {
           setApiKeyTestResult({
             ok: false,
-            message: 'Key không đúng định dạng chuẩn của Google (thường bắt đầu bằng "AIza...").',
+            message: 'Key không đúng định dạng chuẩn của Google (thường bắt đầu bằng "AIza..." hoặc "AQ...").',
           });
         }
       }

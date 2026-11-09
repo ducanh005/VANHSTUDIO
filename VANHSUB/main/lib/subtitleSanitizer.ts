@@ -162,6 +162,8 @@ export interface UntranslatedOptions {
    * thì khi mô hình giữ nguyên dạng từ này, nó được coi là foreign token hợp lệ và miễn trừ kiểm tra.
    */
   isSourceCjk?: boolean;
+  /** Ngôn ngữ đích cần dịch (mặc định: 'vi') */
+  targetLanguage?: string;
 }
 
 /**
@@ -214,6 +216,37 @@ export function isLineUntranslated(
 
   // 2. Không chứa bất kỳ chữ cái nào (chỉ có số, ký hiệu tiền tệ, phần trăm, thời gian...) -> Miễn trừ
   if (!/\p{L}/u.test(sourceClean || sourceTrim)) {
+    return false;
+  }
+
+  // 2b. Ký tự đơn lẻ hoặc đoạn rác OCR ngắn không phải CJK (ví dụ: "L", "V", "T", "S", "E", "D", "a", "s", "à") -> Miễn trừ
+  const isCjk = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(sourceClean || sourceTrim);
+  if (!isCjk && sourceAlpha.length <= 1) {
+    return false;
+  }
+
+  // 2c. Dòng mã / số / ký hiệu lẫn lộn chữ cái ngắn (ví dụ: "@806", "e 22", "3 07", "0A A88", "8 3 07", "mN:", "FA +", "29 C -") -> Miễn trừ
+  const letterCount = (sourceClean.match(/\p{L}/gu) || []).length;
+  if (!isCjk && letterCount <= 2 && sourceClean.length <= 12) {
+    return false;
+  }
+
+  // 2d. Mã watermark / thương hiệu / handle viết hoa toàn bộ (ví dụ: "ANGELANJ", "PACLIDAORK", "WUE", "ANGELANI") -> Miễn trừ
+  if (!isCjk && /^[A-Z0-9_ -]{2,25}$/.test(sourceClean.trim()) && !/[a-z]/.test(sourceClean)) {
+    const words = sourceClean.trim().split(/\s+/);
+    if (words.length <= 4 && words.every((w) => w.length <= 15)) {
+      return false;
+    }
+  }
+
+  // 2e. Từ đơn cực ngắn (<= 3 ký tự) đã có sẵn dấu thanh tiếng Việt khi dịch sang tiếng Việt (ví dụ: "SỐ", "à") -> Miễn trừ
+  const targetLang = (options?.targetLanguage || 'vi').toLowerCase();
+  if (
+    (targetLang === 'vi' || targetLang.startsWith('vi-')) &&
+    sourceClean.length <= 4 &&
+    sourceAlpha.length <= 3 &&
+    /[ăâđêôơưĂÂĐÊÔƠƯáàảãạấầẩẫậắằẳẵặéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựýỳỷỹỵ]/u.test(sourceClean)
+  ) {
     return false;
   }
 

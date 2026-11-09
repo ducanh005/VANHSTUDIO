@@ -44,50 +44,44 @@ export interface GeminiModelGroup {
 
 export const GEMINI_MODEL_GROUPS: GeminiModelGroup[] = [
   {
-    group: 'Model Free khuyên dùng & Tốc độ cao',
+    group: 'Model Free khuyên dùng & Tốc độ cao (Thế hệ 3.x)',
     models: [
+      {
+        id: 'gemini-3.5-flash-lite',
+        name: 'Gemini 3.5 Flash Lite',
+        badge: 'Siêu nhanh • Ổn định nhất',
+        badgeColor: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40',
+        desc: 'Bản 3.5 Flash Lite siêu tốc độ (~0.8s/batch), không bị nghẽn tải 503, tối ưu nhất khi dịch phụ đề lớn.',
+        isRecommended: true,
+      },
       {
         id: 'gemini-3.8-flash',
         name: 'Gemini 3.8 Flash',
         badge: 'Khuyên dùng • Thế hệ mới',
         badgeColor: 'bg-accent-tint text-accent border-accent/40',
-        desc: 'Model thế hệ 3.8 Flash mới nhất, ngữ cảnh 1M token, tốc độ cao, dịch thuật và lý luận phụ đề tối ưu.',
+        desc: 'Model thế hệ 3.8 Flash mới nhất, ngữ cảnh 1M token (tự động dự phòng sang 3.5 Flash Lite khi máy chủ quá tải).',
         isRecommended: true,
       },
       {
-        id: 'gemini-2.5-flash',
-        name: 'Gemini 2.5 Flash',
+        id: 'gemini-3.6-flash',
+        name: 'Gemini 3.6 Flash',
         badge: 'Phổ biến • Free',
         badgeColor: 'bg-blue-500/20 text-blue-400 border-blue-500/40',
-        desc: 'Model ổn định, tốc độ nhanh, dịch thuật & hiệu đính chuẩn xác. Miễn phí (15 RPM / 1M TPM).',
+        desc: 'Model 3.6 Flash ổn định, tốc độ nhanh, dịch thuật & hiệu đính chuẩn xác. Miễn phí (15 RPM / 1M TPM).',
       },
       {
-        id: 'gemini-2.5-flash-lite',
-        name: 'Gemini 2.5 Flash Lite',
-        badge: 'Siêu nhanh • Free',
-        badgeColor: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40',
-        desc: 'Bản siêu nhẹ & siêu tốc độ, tối ưu quota/rate limit khi dịch khối lượng lớn. Miễn phí (15 RPM).',
-      },
-      {
-        id: 'gemini-2.0-flash',
-        name: 'Gemini 2.0 Flash',
+        id: 'gemini-3.5-flash',
+        name: 'Gemini 3.5 Flash',
         badge: 'Rất ổn định • Free',
         badgeColor: 'bg-blue-500/20 text-blue-400 border-blue-500/40',
-        desc: 'Bản Flash 2.0 chuẩn, độ trễ thấp, dịch tự nhiên và ổn định cao. Miễn phí (15 RPM).',
+        desc: 'Bản Flash 3.5 chuẩn, độ trễ thấp, dịch tự nhiên và ổn định cao. Miễn phí (15 RPM).',
       },
       {
-        id: 'gemini-2.0-flash-lite',
-        name: 'Gemini 2.0 Flash Lite',
+        id: 'gemini-3.1-flash-lite',
+        name: 'Gemini 3.1 Flash Lite',
         badge: 'Gọn nhẹ • Free',
         badgeColor: 'bg-teal-500/20 text-teal-400 border-teal-500/40',
-        desc: 'Phiên bản Flash 2.0 rút gọn, phản hồi tức thì, tiết kiệm tài nguyên. Miễn phí (15 RPM).',
-      },
-      {
-        id: 'gemini-1.5-flash',
-        name: 'Gemini 1.5 Flash',
-        badge: 'Kinh điển • Free',
-        badgeColor: 'bg-slate-500/20 text-text border-slate-500/40',
-        desc: 'Bản 1.5 Flash kinh điển, ổn định dài lâu, dịch phụ đề mượt mà. Miễn phí (15 RPM).',
+        desc: 'Phiên bản Flash 3.1 rút gọn, phản hồi tức thì, tiết kiệm tài nguyên. Miễn phí (15 RPM).',
       },
     ],
   },
@@ -95,18 +89,18 @@ export const GEMINI_MODEL_GROUPS: GeminiModelGroup[] = [
     group: 'Model Pro — Dịch thuật & Hiệu đính chuyên sâu',
     models: [
       {
-        id: 'gemini-2.5-pro',
-        name: 'Gemini 2.5 Pro',
+        id: 'gemini-4-argon',
+        name: 'Gemini 4 Argon (Pro)',
         badge: 'Chính xác cao nhất',
         badgeColor: 'bg-amber-500/20 text-amber-400 border-amber-500/40',
-        desc: 'Hiểu sâu ngữ cảnh phức tạp, câu văn cổ trang/chuyên ngành. Miễn phí (2 RPM).',
+        desc: 'Model thế hệ 4 mạnh mẽ, hiểu sâu ngữ cảnh phức tạp, câu văn cổ trang/chuyên ngành.',
       },
       {
-        id: 'gemini-1.5-pro',
-        name: 'Gemini 1.5 Pro',
-        badge: 'Pro 1.5 • Free',
+        id: 'gemini-3.1-pro-preview',
+        name: 'Gemini 3.1 Pro Preview',
+        badge: 'Pro 3.1 • Chuyên sâu',
         badgeColor: 'bg-amber-500/20 text-amber-400 border-amber-500/40',
-        desc: 'Bản 1.5 Pro mạnh mẽ, dịch chi tiết và tự nhiên. Miễn phí.',
+        desc: 'Bản 3.1 Pro mạnh mẽ, dịch chi tiết và tự nhiên.',
       },
     ],
   },
@@ -135,7 +129,7 @@ export const ALL_PRESET_MODELS = GEMINI_MODEL_GROUPS.flatMap((g) => g.models);
 
 export default function SettingsPage() {
   const [apiKey, setApiKey] = useState('');
-  const [geminiModel, setGeminiModel] = useState('gemini-2.5-flash');
+  const [geminiModel, setGeminiModel] = useState('gemini-3.8-flash');
   const [showCustomModelInput, setShowCustomModelInput] = useState(false);
   const [geminiSavedFlash, setGeminiSavedFlash] = useState(false);
   const [targetLanguage, setTargetLanguage] = useState('vi');
@@ -660,7 +654,7 @@ export default function SettingsPage() {
                           void autoSaveSetting('geminiModel', v);
                         }, 500);
                       }}
-                      placeholder="gemini-2.5-flash"
+                      placeholder="gemini-3.5-flash-lite"
                       spellCheck={false}
                       className="flex-1 rounded-md border border-accent/40 bg-surface-2 px-3 py-2 font-mono text-xs text-white focus:border-accent/40 focus:outline-none"
                     />

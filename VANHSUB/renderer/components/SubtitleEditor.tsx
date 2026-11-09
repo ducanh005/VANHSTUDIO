@@ -189,7 +189,7 @@ export default function SubtitleEditor({
   const [aiBusyIndex, setAiBusyIndex] = useState<number | null>(null);
   const [aiActionType, setAiActionType] = useState<'polish' | 'translate' | null>(null);
   const [hasApiKey, setHasApiKey] = useState(false);
-  const [geminiModelName, setGeminiModelName] = useState('gemini-2.5-flash');
+  const [geminiModelName, setGeminiModelName] = useState('gemini-3.8-flash');
   const [keyDraft, setKeyDraft] = useState('');
   const [showKeyInput, setShowKeyInput] = useState(false);
   const [savingKey, setSavingKey] = useState(false);

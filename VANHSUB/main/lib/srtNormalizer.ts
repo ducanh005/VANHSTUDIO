@@ -522,7 +522,14 @@ export function normalizeSrtLines(
   }
 
   if (options?.preserveEvidenceTiming) {
-    const result = lines.filter((line): line is SrtLine => Boolean(line && line.text?.trim()))
+    const result = lines.filter((line): line is SrtLine => {
+      if (!line || !line.text?.trim()) return false;
+      if (options?.removeGarbage !== false && isOcrGarbageLine(line, { minDurationMs: 0 })) {
+        stats.garbageRemoved++;
+        return false;
+      }
+      return true;
+    })
       .map((line) => ({
         ...line,
         needsReview: line.needsReview || !Number.isFinite(line.startMs) ||

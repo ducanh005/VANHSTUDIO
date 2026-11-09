@@ -1,3 +1,4 @@
+import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import Store from 'electron-store';
@@ -161,6 +162,44 @@ function getStore(): Store<AppSettings> {
         flowProjectUrl: '',
       },
     });
+
+    // Tự động khôi phục cấu hình từ thư mục userData cũ (vanhsub -> vanhstudio) nếu store mới đang ở mặc định
+    if (!cwd && _store.path) {
+      try {
+        const currentDir = path.dirname(_store.path);
+        const dirName = path.basename(currentDir);
+        if (/^vanhstudio/i.test(dirName)) {
+          const legacyDir = path.join(path.dirname(currentDir), dirName.replace(/^vanhstudio/i, 'vanhsub'));
+          const legacySettingsPath = path.join(legacyDir, 'vanhsub-settings.json');
+          if (fs.existsSync(legacySettingsPath)) {
+            const legacyData = JSON.parse(fs.readFileSync(legacySettingsPath, 'utf-8'));
+            if (legacyData && typeof legacyData === 'object') {
+              const updates: Partial<AppSettings> = {};
+              if (_store.get('ocrLanguage') === 'vie' && legacyData.ocrLanguage && legacyData.ocrLanguage !== 'vie') {
+                updates.ocrLanguage = legacyData.ocrLanguage;
+              }
+              if (_store.get('asrModel') === 'base' && legacyData.asrModel && legacyData.asrModel !== 'base') {
+                updates.asrModel = legacyData.asrModel;
+              }
+              if (!_store.get('glossary') && legacyData.glossary) {
+                updates.glossary = legacyData.glossary;
+              }
+              if (!_store.get('translationStyleGuide') && legacyData.translationStyleGuide) {
+                updates.translationStyleGuide = legacyData.translationStyleGuide;
+              }
+              if (!_store.get('exportDir') && legacyData.exportDir) {
+                updates.exportDir = legacyData.exportDir;
+              }
+              if (Object.keys(updates).length > 0) {
+                _store.set(updates as any);
+              }
+            }
+          }
+        }
+      } catch {
+        // Bỏ qua lỗi đọc thư mục cũ
+      }
+    }
   }
   return _store;
 }
@@ -199,6 +238,9 @@ export const SettingsStore = {
   /** get() tự động giải mã các secret (geminiApiKey, veoSessionCookie, veoSessionAuthToken) */
   get<K extends keyof AppSettings>(key: K): AppSettings[K] {
     const raw = getStore().get(key);
+    if (key === 'geminiModel' && typeof raw === 'string' && /^gemini-(1\.5|2\.0|2\.5)-/i.test(raw.trim())) {
+      return 'gemini-3.5-flash-lite' as AppSettings[K];
+    }
     if (key === 'geminiModel' && (raw === 'gemini-flash-latest' || !raw)) {
       return 'gemini-3.8-flash' as AppSettings[K];
     }

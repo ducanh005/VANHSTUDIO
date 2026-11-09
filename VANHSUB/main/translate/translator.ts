@@ -7,7 +7,7 @@ import { SettingsStore } from '../store/settingsStore';
 import { parseSrtStrict, serializeSrt, SrtLine } from '../lib/srt';
 import { CancelledError } from '../lib/cancel';
 import { breakVietnameseLines } from '../lib/nlpSegmenter';
-import { isLineUntranslated } from '../lib/subtitleSanitizer';
+import { isLineUntranslated, isOcrGarbageLine } from '../lib/subtitleSanitizer';
 
 export { isLineUntranslated };
 
@@ -46,7 +46,7 @@ export function loadCheckpoint(
   srtPath: string,
   targetLanguage: string,
   expectedTotalLines?: number,
-  options?: { isSourceCjk?: boolean }
+  options?: { isSourceCjk?: boolean; targetLanguage?: string }
 ): Map<string, string> {
   const result = new Map<string, string>();
   const filePath = getCheckpointPath(srtPath);
@@ -681,7 +681,7 @@ export async function translateSubtitlesWithContext(
   const isSourceCjk = cjkCharsLines > 0 && cjkCharsLines / Math.min(lines.length, 100) >= 0.2;
 
   // Nạp cache từ checkpoint của lần chạy trước (nếu có)
-  const cachedRaw = srtPath ? loadCheckpoint(srtPath, targetLanguage, lines.length, { isSourceCjk }) : new Map<string, string>();
+  const cachedRaw = srtPath ? loadCheckpoint(srtPath, targetLanguage, lines.length, { isSourceCjk, targetLanguage }) : new Map<string, string>();
   // Map id -> bản dịch; chỉ dùng khi text gốc KHÔNG đổi (nếu đổi sẽ dịch lại)
   const cachedTarget = new Map<string, string>();
   const checkpointData: Record<string, { source: string; target: string }> = {};
@@ -727,7 +727,7 @@ export async function translateSubtitlesWithContext(
         if (
           entry.source === l.text &&
           entry.target &&
-          !isLineUntranslated(l.text, entry.target, glossary, { isSourceCjk })
+          !isLineUntranslated(l.text, entry.target, glossary, { isSourceCjk, targetLanguage })
         ) {
           cachedTarget.set(l.id, entry.target);
           break;
@@ -757,7 +757,7 @@ export async function translateSubtitlesWithContext(
           if (
             transCandidate &&
             transCandidate.trim() &&
-            !isLineUntranslated(orig.text, transCandidate, glossary, { isSourceCjk }) &&
+            !isLineUntranslated(orig.text, transCandidate, glossary, { isSourceCjk, targetLanguage }) &&
             transCandidate.trim().toLowerCase() !== orig.text.trim().toLowerCase()
           ) {
             validContextItems.unshift({
@@ -840,11 +840,11 @@ export async function translateSubtitlesWithContext(
           // Đồng bộ bản dịch cho các dòng có text trùng lặp với dòng đã dịch trong batch trước khi kiểm tra toàn vẹn
           for (const item of itemsToTranslate) {
             const currentTrans = extractedMap.get(item.i) ?? confirmedTranslations.get(item.i);
-            if (!currentTrans || isLineUntranslated(item.text, currentTrans, glossary, { isSourceCjk })) {
+            if (!currentTrans || isLineUntranslated(item.text, currentTrans, glossary, { isSourceCjk, targetLanguage })) {
               const match = itemsToTranslate.find((other) => {
                 if (other.text !== item.text) return false;
                 const trans = extractedMap.get(other.i) ?? confirmedTranslations.get(other.i);
-                return !!trans && !isLineUntranslated(other.text, trans, glossary, { isSourceCjk });
+                return !!trans && !isLineUntranslated(other.text, trans, glossary, { isSourceCjk, targetLanguage });
               });
               if (match) {
                 const trans = extractedMap.get(match.i) ?? confirmedTranslations.get(match.i);
@@ -858,8 +858,14 @@ export async function translateSubtitlesWithContext(
           for (const item of itemsToTranslate) {
             const trans = extractedMap.get(item.i);
             if (trans && typeof trans === 'string' && trans.trim()) {
-              if (!isLineUntranslated(item.text, trans, glossary, { isSourceCjk })) {
+              if (!isLineUntranslated(item.text, trans, glossary, { isSourceCjk, targetLanguage })) {
                 confirmedTranslations.set(item.i, trans.trim());
+              }
+            } else if (!trans) {
+              const alphaOnly = item.text.replace(/[^\p{L}\p{N}]/gu, '');
+              const isNonCjkGarbage = !isSourceCjk && (alphaOnly.length <= 1 || isOcrGarbageLine({ id: item.i, startMs: 0, endMs: 1000, text: item.text }, { minDurationMs: 0 }));
+              if (isNonCjkGarbage && !isLineUntranslated(item.text, item.text, glossary, { isSourceCjk, targetLanguage })) {
+                confirmedTranslations.set(item.i, item.text.trim());
               }
             }
           }
@@ -922,6 +928,17 @@ export async function translateSubtitlesWithContext(
               }
             }
             unfulfilledItems = itemsToTranslate.filter((item) => !confirmedTranslations.has(item.i));
+            if (unfulfilledItems.length > 0 && attempts >= 3) {
+              for (const item of unfulfilledItems) {
+                const srtIdx = lines.findIndex((l) => l.id === item.i);
+                const srtNum = srtIdx >= 0 ? `#${srtIdx + 1}` : item.i;
+                console.warn(
+                  `[Translate] [Cảnh báo] Bảo toàn câu gốc cho dòng SRT ${srtNum} [${item.i}] ("${item.text}") sau khi cứu hộ đơn lẻ.`
+                );
+                confirmedTranslations.set(item.i, item.text.trim());
+              }
+              unfulfilledItems = [];
+            }
           }
 
           if (unfulfilledItems.length > 0) {
@@ -930,7 +947,7 @@ export async function translateSubtitlesWithContext(
               let reason = 'mô hình bỏ sót trong phản hồi (không có ID dòng)';
               if (rawTrans !== undefined) {
                 if (!rawTrans.trim()) reason = 'mô hình trả về chuỗi rỗng';
-                else if (isLineUntranslated(item.text, rawTrans, glossary, { isSourceCjk })) {
+                else if (isLineUntranslated(item.text, rawTrans, glossary, { isSourceCjk, targetLanguage })) {
                   reason = `mô hình giữ nguyên câu gốc chưa dịch ("${rawTrans.trim()}")`;
                 }
               }
@@ -981,7 +998,7 @@ export async function translateSubtitlesWithContext(
         );
         if (match) {
           const trans = resultMap.get(match.id) ?? cachedTarget.get(match.id);
-          if (trans && !isLineUntranslated(line.text, trans, glossary, { isSourceCjk })) resultMap.set(line.id, trans);
+          if (trans && !isLineUntranslated(line.text, trans, glossary, { isSourceCjk, targetLanguage })) resultMap.set(line.id, trans);
         }
       }
     }
@@ -1101,13 +1118,28 @@ export async function translateSrtFile(
         if (translated.startMs !== original.startMs || translated.endMs !== original.endMs) {
           throw new Error(`Translation changed timestamps at line ${index + 1}`);
         }
-        const match = available.findIndex((segment: SrtLine) =>
+        let match = available.findIndex((segment: SrtLine) =>
           segment.startMs === original.startMs && segment.endMs === original.endMs &&
           segment.text.trim() === original.text.trim());
-        if (match < 0) throw new Error(`Missing timeline evidence at line ${index + 1}`);
-        const [source] = available.splice(match, 1);
-        return { ...source, text: translated.text, originalText: original.text,
-          translationOf: source.id };
+        if (match < 0) {
+          match = available.findIndex((segment: SrtLine) =>
+            segment.startMs === original.startMs && segment.text.trim() === original.text.trim());
+        }
+        if (match < 0 && available[index] && available[index].text.trim() === original.text.trim()) {
+          match = index;
+        }
+        let source: SrtLine;
+        if (match >= 0) {
+          [source] = available.splice(match, 1);
+        } else {
+          source = {
+            id: original.id || `line-${index}`,
+            startMs: original.startMs,
+            endMs: original.endMs,
+            text: original.text,
+          };
+        }
+        return { ...source, startMs: original.startMs, endMs: original.endMs, text: translated.text, originalText: original.text, translationOf: source.id };
       });
       fs.writeFileSync(translatedSrtPath.replace(/\.srt$/i, '.timeline.json'),
         JSON.stringify({ ...evidence, segments: translatedSegments }, null, 2), 'utf-8');
