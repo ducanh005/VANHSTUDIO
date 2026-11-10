@@ -7,7 +7,7 @@ const source = path.join(build, 'dist', release.name), sha = file => crypto.crea
 if (sha(source) !== release.sha256) throw new Error('Installer changed since acceptance');
 const kit = path.join(build, 'RC-VM-kit-' + crypto.randomUUID()); fs.mkdirSync(kit);
 fs.copyFileSync(source, path.join(kit, release.name), fs.constants.COPYFILE_EXCL);
-fs.copyFileSync(path.join(root, 'docs/CODEX_CLEAN_WINDOWS_ACCEPTANCE.md'), path.join(kit, 'README.md'), fs.constants.COPYFILE_EXCL);
+fs.copyFileSync(path.join(root, 'docs/archive/CODEX_CLEAN_WINDOWS_ACCEPTANCE.md'), path.join(kit, 'README.md'), fs.constants.COPYFILE_EXCL);
 fs.copyFileSync(path.join(root, 'scripts/windows_vm_baseline.ps1'), path.join(kit, 'Capture-CleanWindowsBaseline.ps1'), fs.constants.COPYFILE_EXCL);
 const fixtures = path.join(kit, 'Fixtures'); fs.mkdirSync(fixtures);
 const ffmpeg = path.join(build, 'dist/win-unpacked/resources/app.asar.unpacked/node_modules/@ffmpeg-installer/win32-x64/ffmpeg.exe');

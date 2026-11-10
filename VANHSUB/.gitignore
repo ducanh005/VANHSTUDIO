@@ -55,4 +55,10 @@ flowkit_*
 extension/recaptcha*
 *.har
 
+# Audit & build-check artifacts
+audit-output/
+vanhsub-build-check-*/
+_quarantine/
+_cleanup/
+
 

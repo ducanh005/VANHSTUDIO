@@ -1409,7 +1409,7 @@ handleRendererIpc('dialog:chooseDirectory', async () => {
 //   await window.electronAPI.ipcRenderer.invoke('debug:test-rpc-phase1', 'YOUR_PROJECT_UUID')
 handleRendererIpc('debug:test-rpc-phase1', async (_event, projectId: string) => {
   try {
-    const { testRpcPhase1 } = await import('./workflow/flow-engine/rpc/test_rpc_phase1')
+    const { testRpcPhase1 } = await import('../tests/test_rpc_phase1')
     const win = GoogleVeoSessionManager.getInstance().getLobbyWindow()
     if (!win || win.isDestroyed()) {
       return { success: false, errors: ['lobbyWindow chưa mở hoặc đã bị destroy. Hãy mở app đến bước vào project Flow trước.'] }

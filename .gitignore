@@ -1,0 +1,4 @@
+# Global project ignore
+_quarantine/
+_cleanup/
+*.zip

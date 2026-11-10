@@ -38,17 +38,17 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { FlowRpcClient } from './FlowRpcClient';
+import { FlowRpcClient } from '../main/workflow/flow-engine/rpc/FlowRpcClient';
 import {
   buildGenImagePayload,
   type GenImagePayloadOptions,
-} from './FlowBatchBuilder';
+} from '../main/workflow/flow-engine/rpc/FlowBatchBuilder';
 import {
   CAPTCHA_ACTION_IMAGE,
   RECAPTCHA_SITE_KEY,
   WIZ_DATA_AT_TOKEN_KEY,
   RPC_GEN_IMAGE,
-} from './FlowBatchConstants';
+} from '../main/workflow/flow-engine/rpc/FlowBatchConstants';
 
 export interface Phase1Result {
   success: boolean;
