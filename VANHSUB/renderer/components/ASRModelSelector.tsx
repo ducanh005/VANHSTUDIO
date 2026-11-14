@@ -17,7 +17,7 @@ interface ASRModelSelectorProps {
 
 export default function ASRModelSelector({ currentModel, onModelChange }: ASRModelSelectorProps) {
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
-  const [recommendedModel, setRecommendedModel] = useState<string>('base');
+  const [recommendedModel, setRecommendedModel] = useState<string>('large-v3-turbo');
   const [selectedModel, setSelectedModel] = useState<string>(currentModel);
   const [canRun, setCanRun] = useState<{ canRun: boolean; warnings: string[] } | null>(null);
   const [loadingSystemInfo, setLoadingSystemInfo] = useState(true);

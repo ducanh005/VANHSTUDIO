@@ -47,8 +47,8 @@ const vanhsub = {
       ipcRenderer.invoke('subtitles:normalize', input, options),
   },
   translate: {
-    start: (id: string, targetLanguage?: string) =>
-      ipcRenderer.invoke('translate:start', id, targetLanguage),
+    start: (id: string, targetLanguage?: string, options?: { targetTrack?: 'primary' | 'overlay' | 'both' }) =>
+      ipcRenderer.invoke('translate:start', id, targetLanguage, options ?? null),
     cancel: (id: string) => ipcRenderer.invoke('translate:cancel', id),
   },
   export: {

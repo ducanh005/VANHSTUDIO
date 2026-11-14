@@ -46,6 +46,10 @@ export interface Task {
   speakers?: string[];
   srtPath?: string;
   translatedSrtPath?: string;
+  /** File SRT vùng trên (thông tin hình ảnh, bảng biểu, overlay tách riêng khi OCR/Hybrid 2 vùng) */
+  overlaySrtPath?: string;
+  /** Bản dịch của overlaySrtPath */
+  translatedOverlaySrtPath?: string;
   subtitleRevision?: number;
   ttsNeedsRegeneration?: boolean;
   dubbingPreferences?: DubbingPreferences;
@@ -149,12 +153,14 @@ export const TaskStore = {
       stageDescription: input.stageDescription || 'Đang chờ xử lý',
       sourceLanguage: input.sourceLanguage || 'vi',
       targetLanguage: input.targetLanguage,
-      asrModel: input.asrModel || SettingsStore.get('asrModel') || 'base',
+      asrModel: input.asrModel || SettingsStore.get('asrModel') || 'large-v3-turbo',
       asrEngine: input.asrEngine || SettingsStore.get('asrEngine') || 'faster-whisper',
       enableDiarization: input.enableDiarization ?? SettingsStore.get('enableDiarization'),
       speakerCount: input.speakerCount,
       srtPath: input.srtPath,
       translatedSrtPath: input.translatedSrtPath,
+      overlaySrtPath: input.overlaySrtPath,
+      translatedOverlaySrtPath: input.translatedOverlaySrtPath,
       subtitleRevision: input.subtitleRevision,
       ttsNeedsRegeneration: input.ttsNeedsRegeneration,
       dubbingPreferences: input.dubbingPreferences,

@@ -42,6 +42,7 @@ export interface OcrFrameLine {
   w?: number;
   h?: number;
   classification?: 'SUBTITLE' | 'OVERLAY' | 'OTHER_TEXT';
+  zone?: 'top' | 'bottom';
 }
 
 export interface OcrFrameResult {

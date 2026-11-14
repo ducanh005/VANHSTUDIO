@@ -707,35 +707,7 @@ Không giải thích thêm, không bọc trong markdown.`;
       const completion = await client.chat.completions.create(completionParams);
 
       const raw = completion.choices[0]?.message?.content?.trim() || '[]';
-      const cleanJson = raw.replace(/^```json\s*/i, '').replace(/\s*```$/i, '').trim();
-
-      let parsed: any;
-      try {
-        parsed = JSON.parse(cleanJson);
-      } catch {
-        parsed = JSON.parse(jsonrepair(cleanJson));
-      }
-
-      let groupsArray: any[] = [];
-      if (Array.isArray(parsed)) {
-        groupsArray = parsed;
-      } else if (parsed && typeof parsed === 'object') {
-        const arrayKeys = ['groups', 'subtitles', 'items', 'result', 'results', 'data', 'output'];
-        for (const k of arrayKeys) {
-          if (Array.isArray(parsed[k]) && parsed[k].length > 0) {
-            groupsArray = parsed[k];
-            break;
-          }
-        }
-        if (groupsArray.length === 0) {
-          for (const v of Object.values(parsed)) {
-            if (Array.isArray(v) && v.length > 0) {
-              groupsArray = v as any[];
-              break;
-            }
-          }
-        }
-      }
+      const groupsArray = extractJsonArrayFromAiText(raw);
 
       if (groupsArray.length > 0) {
         const resolved = resolveGroupedTimestamps(chunk, groupsArray, MAX_SUBTITLE_GAP_MS, MAX_SUBTITLE_DURATION_MS);
@@ -762,6 +734,170 @@ Không giải thích thêm, không bọc trong markdown.`;
   }
 
   return cleanedAll;
+}
+
+function extractJsonArrayFromAiText(raw: string): any[] {
+  const cleanJson = raw.replace(/^```json\s*/i, '').replace(/\s*```$/i, '').trim();
+  let parsed: any;
+  try {
+    parsed = JSON.parse(cleanJson);
+  } catch {
+    parsed = JSON.parse(jsonrepair(cleanJson));
+  }
+
+  if (Array.isArray(parsed)) return parsed;
+  if (parsed && typeof parsed === 'object') {
+    const arrayKeys = ['groups', 'subtitles', 'items', 'result', 'results', 'data', 'output'];
+    for (const k of arrayKeys) {
+      if (Array.isArray(parsed[k]) && parsed[k].length > 0) return parsed[k];
+    }
+    for (const v of Object.values(parsed)) {
+      if (Array.isArray(v) && v.length > 0) return v as any[];
+    }
+  }
+  return [];
+}
+
+export interface AsrOcrReconcileItem {
+  index: number;
+  startMs: number;
+  endMs: number;
+  asrText: string;
+  ocrText: string;
+  status: 'matched' | 'unmatched_ocr_with_speech';
+  fallbackAction: 'keep_sub' | 'move_to_overlay';
+  fallbackText: string;
+}
+
+export interface AsrOcrReconcileDecision {
+  index: number;
+  action: 'keep_sub' | 'move_to_overlay';
+  text: string;
+}
+
+/**
+ * Chuẩn hóa phản hồi JSON từ Gemini khi đối chiếu ASR vs OCR, đảm bảo mọi phần tử đầu vào
+ * đều có quyết định hợp lệ (Missing Index Recovery -> dùng fallbackAction/fallbackText).
+ */
+export function resolveReconcileDecisions(
+  chunk: AsrOcrReconcileItem[],
+  rawResponse: string,
+): AsrOcrReconcileDecision[] {
+  const mapByIdx = new Map<number, AsrOcrReconcileDecision>();
+  let rows: any[] = [];
+  try {
+    rows = extractJsonArrayFromAiText(rawResponse || '[]');
+  } catch {
+    rows = [];
+  }
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue;
+    const idx = Number(row.index);
+    if (!Number.isInteger(idx)) continue;
+    const action = row.action === 'move_to_overlay' ? 'move_to_overlay' : 'keep_sub';
+    const text = typeof row.text === 'string' ? row.text.trim() : '';
+    mapByIdx.set(idx, { index: idx, action, text });
+  }
+
+  return chunk.map((item) => {
+    const picked = mapByIdx.get(item.index);
+    if (!picked) {
+      return {
+        index: item.index,
+        action: item.fallbackAction,
+        text: item.fallbackText,
+      };
+    }
+    return {
+      index: item.index,
+      action: picked.action,
+      text: picked.text || item.fallbackText,
+    };
+  });
+}
+
+/**
+ * Dùng Gemini AI đối chiếu câu từ Whisper ASR với phụ đề OCR (ở vùng dưới) để sửa lỗi
+ * đồng âm/sai dấu OCR và phân loại chữ bảng/biểu đồ lạc vào vùng dưới sang `move_to_overlay`.
+ */
+export async function reconcileAsrAndOcrWithGemini(
+  items: AsrOcrReconcileItem[],
+  onProgress?: (percent: number) => void,
+): Promise<AsrOcrReconcileDecision[]> {
+  if (!items || items.length === 0) return [];
+
+  const { client, model } = createGeminiClient();
+  const CHUNK_SIZE = 35;
+  const decisions: AsrOcrReconcileDecision[] = [];
+  const totalChunks = Math.ceil(items.length / CHUNK_SIZE);
+
+  for (let chunkIdx = 0; chunkIdx < totalChunks; chunkIdx++) {
+    const startIdx = chunkIdx * CHUNK_SIZE;
+    const chunk = items.slice(startIdx, startIdx + CHUNK_SIZE);
+
+    const payload = chunk.map((item) => ({
+      index: item.index,
+      status: item.status,
+      asrText: item.asrText,
+      ocrText: item.ocrText,
+    }));
+
+    const prompt = `Bạn là chuyên gia hậu kỳ phụ đề video đa phương thức (ASR âm thanh Whisper + OCR chữ màn hình).
+Dưới đây là danh sách ${chunk.length} đoạn cần đối chiếu theo từng index.
+
+QUY TẮC XỬ LÝ:
+1. Với mục \`status: "matched"\`:
+   - \`asrText\` là lời nói nghe được; \`ocrText\` là phụ đề đọc được từ khung hình.
+   - Hãy đối chiếu cả 2: giữ cấu trúc/ngữ nghĩa tự nhiên của câu nói, dùng chữ chuẩn trong \`ocrText\` để sửa lỗi đồng âm/tên riêng của Whisper, hoặc dùng \`asrText\` để vá lỗi mờ chữ/mất dấu của OCR.
+   - Trả về \`action: "keep_sub"\` và \`text\` hoàn chỉnh (giữ nguyên ngôn ngữ gốc, KHÔNG dịch).
+2. Với mục \`status: "unmatched_ocr_with_speech"\`:
+   - \`ocrText\` nằm ở vùng dưới nhưng trùng thời điểm đang có lời thoại khác (\`asrText\`).
+   - Nếu \`ocrText\` là chú thích hình ảnh, nhãn bảng biểu, số liệu/tiêu đề trên video -> \`action: "move_to_overlay"\`, \`text\`: nội dung sạch của \`ocrText\`.
+   - Nếu \`ocrText\` thực chất là lời thoại bị tách câu khác -> \`action: "keep_sub"\`, \`text\`: câu thoại sạch.
+3. Không được bỏ sót index nào. Không bịa nội dung mới.
+
+ĐẦU VÀO JSON:
+${JSON.stringify(payload, null, 2)}
+
+ĐẦU RA BẮT BUỘC (DUY NHẤT mảng JSON):
+[
+  { "index": 0, "action": "keep_sub", "text": "..." }
+]`;
+
+    try {
+      const isGemini3 = /gemini-3|gemini-flash-latest/i.test(model);
+      const completionParams: any = {
+        model,
+        messages: [
+          { role: 'system', content: 'Bạn là chuyên gia đối chiếu phụ đề ASR và OCR. Luôn trả về duy nhất JSON array hợp lệ.' },
+          { role: 'user', content: prompt },
+        ],
+      };
+      if (isGemini3) {
+        completionParams.reasoning_effort = 'low';
+        completionParams.temperature = 1.0;
+      } else {
+        completionParams.temperature = 0.2;
+      }
+
+      const completion = await client.chat.completions.create(completionParams);
+      const raw = completion.choices[0]?.message?.content?.trim() || '[]';
+      decisions.push(...resolveReconcileDecisions(chunk, raw));
+    } catch (err: any) {
+      console.warn(`[Hybrid AI] Lỗi đối chiếu chunk ${chunkIdx + 1}/${totalChunks}:`, err?.message || err);
+      decisions.push(
+        ...chunk.map((item) => ({
+          index: item.index,
+          action: item.fallbackAction,
+          text: item.fallbackText,
+        })),
+      );
+    }
+
+    onProgress?.(Math.round(((chunkIdx + 1) / totalChunks) * 100));
+  }
+
+  return decisions;
 }
 
 

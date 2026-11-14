@@ -196,14 +196,22 @@ export default function SubtitleEditor({
   const [isCleaningSubtitles, setIsCleaningSubtitles] = useState(false);
 
   // Nguồn SRT đang hiệu đính
-  const [srtSource, setSrtSource] = useState<'original' | 'translated'>('original');
+  const [srtSource, setSrtSource] = useState<'original' | 'translated' | 'overlay_original' | 'overlay_translated'>('original');
   const prevTaskIdRef = useRef<string | null>(null);
   const prevTranslatedSrtPathRef = useRef<string | undefined>(undefined);
+  const prevTranslatedOverlaySrtPathRef = useRef<string | undefined>(undefined);
 
   const selectedTask = tasks.find((t) => t.id === selectedTaskId) || null;
   const isTranslating = selectedTask?.status === 'translating';
   const hasTranslatedSrt = !!selectedTask?.translatedSrtPath;
   const hasOriginalSrt = !!selectedTask?.srtPath;
+  const hasOverlayOriginalSrt = !!selectedTask?.overlaySrtPath;
+  const hasOverlayTranslatedSrt = !!selectedTask?.translatedOverlaySrtPath;
+  const isOverlayTrack = srtSource === 'overlay_original' || srtSource === 'overlay_translated';
+  const isTranslatedView = srtSource === 'translated' || srtSource === 'overlay_translated';
+  const hasActiveOriginal = isOverlayTrack ? hasOverlayOriginalSrt : hasOriginalSrt;
+  const hasActiveTranslated = isOverlayTrack ? hasOverlayTranslatedSrt : hasTranslatedSrt;
+  const referenceSrtPath = isOverlayTrack ? selectedTask?.overlaySrtPath : selectedTask?.srtPath;
 
   const mediaUrl = useMemo(() => {
     if (!selectedTask?.filePath) return '';
@@ -231,7 +239,7 @@ export default function SubtitleEditor({
 
   // R4: Phát hiện danh sách các dòng chưa được dịch (trùng nội dung câu gốc) khi xem bản dịch
   const untranslatedIndices = useMemo(() => {
-    if (srtSource !== 'translated' || lines.length === 0 || originalLines.length === 0) {
+    if (!isTranslatedView || lines.length === 0 || originalLines.length === 0) {
       return [];
     }
     const list: number[] = [];
@@ -247,20 +255,27 @@ export default function SubtitleEditor({
       }
     }
     return list;
-  }, [srtSource, lines, originalLines, glossary]);
+  }, [isTranslatedView, lines, originalLines, glossary]);
 
-  // File SRT đang mở: bản dịch nếu đang chọn và đã có, ngược lại bản gốc
+  // File SRT đang mở: thoại gốc/dịch hoặc overlay gốc/dịch
   const activeSrtPath = useMemo(() => {
     if (!selectedTask) return '';
-    return srtSource === 'translated' && selectedTask.translatedSrtPath
-      ? selectedTask.translatedSrtPath
-      : selectedTask.srtPath || '';
+    if (srtSource === 'translated' && selectedTask.translatedSrtPath) {
+      return selectedTask.translatedSrtPath;
+    }
+    if (srtSource === 'overlay_translated' && selectedTask.translatedOverlaySrtPath) {
+      return selectedTask.translatedOverlaySrtPath;
+    }
+    if (srtSource === 'overlay_original' && selectedTask.overlaySrtPath) {
+      return selectedTask.overlaySrtPath;
+    }
+    return selectedTask.srtPath || selectedTask.overlaySrtPath || '';
   }, [selectedTask, srtSource]);
 
   // Tự chọn task đầu tiên có SRT nếu chưa chọn task nào
   useEffect(() => {
     if (!selectedTaskId && tasks.length > 0) {
-      const firstWithSrt = tasks.find((t) => t.srtPath);
+      const firstWithSrt = tasks.find((t) => t.srtPath || t.overlaySrtPath);
       if (firstWithSrt) setSelectedTaskId(firstWithSrt.id);
     }
   }, [tasks, selectedTaskId]);
@@ -277,24 +292,41 @@ export default function SubtitleEditor({
     if (selectedTaskId !== prevTaskIdRef.current) {
       prevTaskIdRef.current = selectedTaskId;
       prevTranslatedSrtPathRef.current = selectedTask?.translatedSrtPath;
+      prevTranslatedOverlaySrtPathRef.current = selectedTask?.translatedOverlaySrtPath;
       if (selectedTask?.translatedSrtPath) {
         setSrtSource('translated');
+      } else if (selectedTask?.srtPath) {
+        setSrtSource('original');
+      } else if (selectedTask?.translatedOverlaySrtPath) {
+        setSrtSource('overlay_translated');
+      } else if (selectedTask?.overlaySrtPath) {
+        setSrtSource('overlay_original');
       } else {
         setSrtSource('original');
       }
       return;
     }
 
-    // Nếu cùng task nhưng bản dịch vừa hoàn thành (trước đó chưa có, giờ đã có)
+    // Nếu cùng task nhưng bản dịch vừa hoàn thành
     if (!prevTranslatedSrtPathRef.current && selectedTask?.translatedSrtPath) {
       prevTranslatedSrtPathRef.current = selectedTask.translatedSrtPath;
-      setSrtSource('translated');
+      if (!isOverlayTrack) {
+        setSrtSource('translated');
+      }
       setReloadKey((k) => k + 1);
       setStatusMessage('Bản dịch AI đã hoàn tất! Đã tự động chuyển sang xem bản dịch.');
+    } else if (!prevTranslatedOverlaySrtPathRef.current && selectedTask?.translatedOverlaySrtPath) {
+      prevTranslatedOverlaySrtPathRef.current = selectedTask.translatedOverlaySrtPath;
+      if (isOverlayTrack) {
+        setSrtSource('overlay_translated');
+      }
+      setReloadKey((k) => k + 1);
+      setStatusMessage('Đã dịch xong file bảng/thông tin (overlay)!');
     } else {
       prevTranslatedSrtPathRef.current = selectedTask?.translatedSrtPath;
+      prevTranslatedOverlaySrtPathRef.current = selectedTask?.translatedOverlaySrtPath;
     }
-  }, [selectedTaskId, selectedTask?.translatedSrtPath]);
+  }, [selectedTaskId, selectedTask?.translatedSrtPath, selectedTask?.translatedOverlaySrtPath, selectedTask?.srtPath, selectedTask?.overlaySrtPath, isOverlayTrack]);
 
   const handleTaskChange = (newTaskId: string | null) => {
     if (newTaskId === selectedTaskId) return;
@@ -304,7 +336,7 @@ export default function SubtitleEditor({
     setSelectedTaskId(newTaskId);
   };
 
-  const handleSourceChange = (src: 'original' | 'translated') => {
+  const handleSourceChange = (src: 'original' | 'translated' | 'overlay_original' | 'overlay_translated') => {
     if (src === srtSource) return;
     if (dirty && !window.confirm('Thay đổi chưa lưu của file đang mở sẽ mất khi đổi nguồn. Tiếp tục?')) {
       return;
@@ -341,15 +373,15 @@ export default function SubtitleEditor({
       .catch(() => {});
   }, []);
 
-  // Tải file gốc để đối chiếu khi ở chế độ bản dịch
+  // Tải file gốc để đối chiếu khi ở chế độ bản dịch (hỗ trợ cả thoại và overlay)
   useEffect(() => {
-    if (!selectedTask?.srtPath) {
+    if (!referenceSrtPath) {
       setOriginalLines([]);
       return;
     }
     let cancelled = false;
     window.vanhsub.tasks
-      .readSrt(selectedTask.srtPath)
+      .readSrt(referenceSrtPath)
       .then((content) => {
         if (cancelled) return;
         setOriginalLines(parseSrt(content));
@@ -361,7 +393,7 @@ export default function SubtitleEditor({
     return () => {
       cancelled = true;
     };
-  }, [selectedTask?.srtPath, reloadKey]);
+  }, [referenceSrtPath, reloadKey]);
 
   // Tải SRT khi đổi tác vụ, đổi nguồn hoặc khi reloadKey tăng
   useEffect(() => {
@@ -374,6 +406,14 @@ export default function SubtitleEditor({
     setLoading(true);
     setStatusError(false);
     setStatusMessage('Đang tải file SRT...');
+    const sourceLabel =
+      srtSource === 'translated'
+        ? 'Bản dịch'
+        : srtSource === 'overlay_translated'
+          ? 'Bảng/Overlay (Dịch)'
+          : srtSource === 'overlay_original'
+            ? 'Bảng/Overlay (Gốc)'
+            : 'Bản gốc';
     window.vanhsub.tasks
       .readSrt(activeSrtPath)
       .then((content) => {
@@ -386,7 +426,7 @@ export default function SubtitleEditor({
         setCanRedo(false);
         setDirty(false);
         setLoading(false);
-        setStatusMessage(`Đã nạp ${parsed.length} dòng phụ đề (${srtSource === 'translated' ? 'Bản dịch' : 'Bản gốc'})`);
+        setStatusMessage(`Đã nạp ${parsed.length} dòng phụ đề (${sourceLabel})`);
       })
       .catch((err: any) => {
         if (cancelled) return;
@@ -730,12 +770,22 @@ export default function SubtitleEditor({
       setStatusError(false);
       setStatusMessage('Đang lưu file SRT...');
       await window.vanhsub.tasks.writeSrt(activeSrtPath, serializeSrt(lines));
-      if (srtSource === 'original') {
+      if (!isTranslatedView) {
         setOriginalLines(lines);
       }
       setDirty(false);
       setLoading(false);
-      setStatusMessage(`Đã lưu thành công ${lines.length} dòng (${srtSource === 'translated' ? 'Bản dịch' : 'Bản gốc'})!`);
+      setStatusMessage(
+        `Đã lưu thành công ${lines.length} dòng (${
+          srtSource === 'overlay_translated'
+            ? 'Bảng/Overlay dịch'
+            : srtSource === 'overlay_original'
+              ? 'Bảng/Overlay gốc'
+              : srtSource === 'translated'
+                ? 'Bản dịch'
+                : 'Bản gốc'
+        })!`,
+      );
       setTimeout(() => setStatusMessage(''), 4000);
     } catch (err: any) {
       setLoading(false);
@@ -799,7 +849,7 @@ export default function SubtitleEditor({
     setAiActionType('translate');
     try {
       const origText =
-        srtSource === 'translated'
+        isTranslatedView
           ? originalLines.find((o) => o.id === lines[index].id)?.text ||
             originalLines[index]?.text ||
             originalLines.find((o) => Math.abs(o.startMs - lines[index].startMs) < 1000)?.text ||
@@ -1007,7 +1057,9 @@ export default function SubtitleEditor({
     const targetLabel = TARGET_LANGUAGES.find((l) => l.code === targetLanguage)?.label || targetLanguage;
     setStatusMessage(`Đã gửi yêu cầu dịch toàn bộ sang ${targetLabel} bằng Gemini...`);
     try {
-      await window.vanhsub.translate.start(selectedTaskId, targetLanguage);
+      await window.vanhsub.translate.start(selectedTaskId, targetLanguage, {
+        targetTrack: isOverlayTrack ? 'overlay' : 'primary',
+      });
     } catch (err: any) {
       setStatusError(true);
       setStatusMessage(err?.message || String(err));
@@ -1043,7 +1095,7 @@ export default function SubtitleEditor({
   const posPercent = (ms: number) =>
     durationMs > 0 ? Math.min(100, Math.max(0, (ms / durationMs) * 100)) : 0;
 
-  const editorTasks = tasks.filter((t) => t.srtPath);
+  const editorTasks = tasks.filter((t) => t.srtPath || t.overlaySrtPath);
 
   return (
     <div className="flex flex-1 flex-col gap-4 overflow-hidden p-6">
@@ -1064,43 +1116,83 @@ export default function SubtitleEditor({
             ))}
           </select>
 
-          {/* Nguồn phụ đề đang hiệu đính: bản gốc hay bản dịch */}
-          {selectedTaskId && selectedTask?.srtPath && (
-            <div className="flex items-center gap-1.5">
+          {/* Nguồn phụ đề đang hiệu đính: thoại gốc/dịch & (nếu có) bảng/overlay gốc/dịch */}
+          {selectedTaskId && (selectedTask?.srtPath || selectedTask?.overlaySrtPath) && (
+            <div className="flex flex-wrap items-center gap-1.5">
               <label className="text-xs font-semibold text-text">Đang sửa:</label>
               <div className="flex overflow-hidden rounded-md border border-border bg-bg">
-                <button
-                  type="button"
-                  onClick={() => handleSourceChange('original')}
-                  className={[
-                    'px-3 py-1.5 text-[11px] font-medium transition cursor-pointer',
-                    srtSource === 'original'
-                      ? 'bg-accent-tint text-accent font-semibold'
-                      : 'bg-surface-2 text-text hover:bg-surface-3',
-                  ].join(' ')}
-                >
-                  Bản gốc (.srt)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleSourceChange('translated')}
-                  disabled={!hasTranslatedSrt}
-                  title={
-                    hasTranslatedSrt
-                      ? 'Sửa bản dịch (file các bước TTS/Xuất video sẽ dùng)'
-                      : 'Chưa có bản dịch — bấm "Dịch bằng Gemini" để tạo'
-                  }
-                  className={[
-                    'border-l border-border px-3 py-1.5 text-[11px] font-medium transition',
-                    srtSource === 'translated'
-                      ? 'bg-accent-tint text-accent font-semibold cursor-pointer'
-                      : hasTranslatedSrt
-                        ? 'bg-surface-2 text-text hover:bg-surface-3 cursor-pointer'
-                        : 'bg-surface-2 text-text-muted cursor-not-allowed',
-                  ].join(' ')}
-                >
-                  Bản dịch {hasTranslatedSrt ? '✓' : '(chưa có)'}
-                </button>
+                {hasOriginalSrt && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => handleSourceChange('original')}
+                      className={[
+                        'px-3 py-1.5 text-[11px] font-medium transition cursor-pointer',
+                        srtSource === 'original'
+                          ? 'bg-accent-tint text-accent font-semibold'
+                          : 'bg-surface-2 text-text hover:bg-surface-3',
+                      ].join(' ')}
+                    >
+                      Bản gốc (.srt)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleSourceChange('translated')}
+                      disabled={!hasTranslatedSrt}
+                      title={
+                        hasTranslatedSrt
+                          ? 'Sửa bản dịch (file các bước TTS/Xuất video sẽ dùng)'
+                          : 'Chưa có bản dịch — bấm "Dịch bằng Gemini" để tạo'
+                      }
+                      className={[
+                        'border-l border-border px-3 py-1.5 text-[11px] font-medium transition',
+                        srtSource === 'translated'
+                          ? 'bg-accent-tint text-accent font-semibold cursor-pointer'
+                          : hasTranslatedSrt
+                            ? 'bg-surface-2 text-text hover:bg-surface-3 cursor-pointer'
+                            : 'bg-surface-2 text-text-muted cursor-not-allowed',
+                      ].join(' ')}
+                    >
+                      Bản dịch {hasTranslatedSrt ? '✓' : '(chưa có)'}
+                    </button>
+                  </>
+                )}
+                {hasOverlayOriginalSrt && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => handleSourceChange('overlay_original')}
+                      className={[
+                        `${hasOriginalSrt ? 'border-l border-border ' : ''}px-3 py-1.5 text-[11px] font-medium transition cursor-pointer`,
+                        srtSource === 'overlay_original'
+                          ? 'bg-amber-500/20 text-amber-300 font-semibold'
+                          : 'bg-surface-2 text-text hover:bg-surface-3',
+                      ].join(' ')}
+                    >
+                      Bảng/Overlay gốc
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleSourceChange('overlay_translated')}
+                      disabled={!hasOverlayTranslatedSrt}
+                      title={
+                        hasOverlayTranslatedSrt
+                          ? 'Sửa bản dịch của file bảng/thông tin vùng trên'
+                          : 'Chưa có bản dịch cho bảng/overlay — chọn tab này rồi bấm "Dịch bằng Gemini"'
+                      }
+                      className={[
+                        'border-l border-border px-3 py-1.5 text-[11px] font-medium transition',
+                        srtSource === 'overlay_translated'
+                          ? 'bg-amber-500/20 text-amber-300 font-semibold cursor-pointer'
+                          : hasOverlayTranslatedSrt
+                            ? 'bg-surface-2 text-text hover:bg-surface-3 cursor-pointer'
+                            : 'bg-surface-2 text-text-muted cursor-not-allowed',
+                      ].join(' ')}
+                    >
+                      Bảng/Overlay dịch {hasOverlayTranslatedSrt ? '✓' : '(chưa có)'}
+                    </button>
+                  </>
+                )}
               </div>
 
               <button
@@ -1117,7 +1209,7 @@ export default function SubtitleEditor({
             </div>
           )}
 
-          {/* Nút dịch toàn bộ file trực tiếp trong Editor */}
+          {/* Nút dịch toàn bộ file đang chọn trực tiếp trong Editor */}
           {selectedTaskId && (
             <div className="flex items-center gap-1.5">
               <div className="flex items-center gap-1 rounded-md border border-border bg-surface-2 px-2 py-1">
@@ -1156,18 +1248,29 @@ export default function SubtitleEditor({
                   type="button"
                   onClick={handleStartFullTranslate}
                   disabled={loading}
-                  title={hasTranslatedSrt ? 'Dịch lại toàn bộ phụ đề bằng Gemini' : 'Dịch toàn bộ phụ đề sang ngôn ngữ đã chọn'}
+                  title={
+                    isOverlayTrack
+                      ? hasOverlayTranslatedSrt
+                        ? 'Dịch lại file bảng/overlay bằng Gemini'
+                        : 'Dịch file bảng/overlay bằng Gemini'
+                      : hasTranslatedSrt
+                        ? 'Dịch lại toàn bộ phụ đề thoại bằng Gemini'
+                        : 'Dịch toàn bộ phụ đề thoại sang ngôn ngữ đã chọn'
+                  }
                   className="inline-flex items-center gap-1.5 rounded-md border border-accent/40 bg-accent-tint px-3 py-1.5 text-xs font-semibold text-accent hover:bg-accent-tint/25 cursor-pointer disabled:opacity-50 transition"
                 >
                   <Globe2 className="h-3.5 w-3.5" />
-                  <span>{hasTranslatedSrt ? 'Dịch lại (Gemini)' : 'Dịch bằng Gemini'}</span>
+                  <span>
+                    {hasActiveTranslated ? 'Dịch lại (Gemini)' : 'Dịch bằng Gemini'}
+                    {isOverlayTrack ? ' [Bảng]' : ''}
+                  </span>
                 </button>
               )}
             </div>
           )}
 
           {/* Nút bật/tắt đối chiếu song ngữ khi sửa bản dịch */}
-          {selectedTaskId && srtSource === 'translated' && hasOriginalSrt && (
+          {selectedTaskId && isTranslatedView && hasActiveOriginal && (
             <button
               type="button"
               onClick={() => setShowBilingual((v) => !v)}
@@ -1185,7 +1288,7 @@ export default function SubtitleEditor({
           )}
 
           {/* Cảnh báo lệch số dòng giữa bản dịch và bản gốc */}
-          {selectedTaskId && srtSource === 'translated' && originalLines.length > 0 && lines.length !== originalLines.length && (
+          {selectedTaskId && isTranslatedView && originalLines.length > 0 && lines.length !== originalLines.length && (
             <span
               title={`Số dòng bản dịch (${lines.length} dòng) khác với bản gốc (${originalLines.length} dòng) do có thêm/xoá câu.`}
               className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium text-amber-300"
@@ -1196,7 +1299,7 @@ export default function SubtitleEditor({
           )}
 
           {/* R4: Chỉ báo trạng thái câu chưa dịch & Nút 1-click dịch câu sót (Recovery Safety Net) */}
-          {selectedTaskId && srtSource === 'translated' && untranslatedIndices.length > 0 && (
+          {selectedTaskId && isTranslatedView && untranslatedIndices.length > 0 && (
             <div className="flex items-center gap-1.5">
               <span
                 title={`Phát hiện ${untranslatedIndices.length} câu chưa được dịch sang ngôn ngữ đích (nội dung trùng với câu gốc).`}
@@ -1422,7 +1525,7 @@ export default function SubtitleEditor({
             Chọn một tác vụ đã hoàn thành phiên âm (có file .srt) ở menu phía trên để bắt đầu hiệu đính.
           </span>
         </div>
-      ) : !selectedTask?.srtPath ? (
+      ) : !(selectedTask?.srtPath || selectedTask?.overlaySrtPath) ? (
         <div className="flex flex-1 flex-col items-center justify-center rounded-lg border border-dashed border-border bg-surface p-12 text-center text-text-muted text-xs">
           <MessageSquareText className="h-10 w-10 text-text-faint mb-3" />
           <span>Tác vụ này chưa có file .srt — hãy chạy "Bắt đầu phiên âm" ở Trang chủ trước.</span>
@@ -1434,7 +1537,14 @@ export default function SubtitleEditor({
             <div className="mb-3 flex items-center justify-between border-b border-border pb-3">
               <div className="flex items-center gap-2">
                 <h3 className="text-xs font-bold uppercase tracking-wider text-text">
-                  {srtSource === 'translated' ? 'Phụ đề bản dịch' : 'Phụ đề bản gốc'} ({lines.length} dòng)
+                  {srtSource === 'overlay_translated'
+                    ? 'Bảng / Overlay bản dịch'
+                    : srtSource === 'overlay_original'
+                      ? 'Bảng / Overlay bản gốc'
+                      : srtSource === 'translated'
+                        ? 'Phụ đề bản dịch'
+                        : 'Phụ đề bản gốc'}{' '}
+                  ({lines.length} dòng)
                 </h3>
                 {dirty && (
                   <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-amber-400">
@@ -1477,7 +1587,7 @@ export default function SubtitleEditor({
                   const isDragging = draggedIndex === index;
                   const isDragOver = dragOverIndex === index && draggedIndex !== index;
                   const isNewlyAdded = item.id === newlyAddedId;
-                  const isUntranslatedItem = srtSource === 'translated' && untranslatedIndices.includes(index);
+                  const isUntranslatedItem = isTranslatedView && untranslatedIndices.includes(index);
 
                   return (
                     <div
@@ -1652,7 +1762,7 @@ export default function SubtitleEditor({
                       </div>
 
                       {/* Hiển thị câu gốc để đối chiếu khi đang sửa bản dịch */}
-                      {srtSource === 'translated' && showBilingual && (
+                      {isTranslatedView && showBilingual && (
                         <div
                           onClick={(e) => e.stopPropagation()}
                           className="rounded-md border border-border bg-bg p-2.5 text-xs"
@@ -1675,7 +1785,7 @@ export default function SubtitleEditor({
                           rows={2}
                           value={item.text}
                           onChange={(e) => updateLine(index, { text: e.target.value })}
-                          placeholder={srtSource === 'translated' ? 'Nội dung bản dịch...' : 'Nội dung câu phụ đề...'}
+                          placeholder={isTranslatedView ? 'Nội dung bản dịch...' : 'Nội dung câu phụ đề...'}
                           className="flex-1 rounded-md border border-border bg-bg p-2 text-xs text-white placeholder:text-text-faint focus:border-accent/40 focus:outline-none"
                         />
                         <div className="flex flex-col gap-1">

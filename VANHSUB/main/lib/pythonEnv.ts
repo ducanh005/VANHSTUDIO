@@ -130,6 +130,13 @@ if info["hasTorch"]:
     except Exception:
         pass
 
+if not info["hasCuda"] and info["hasCtranslate2"]:
+    try:
+        import ctranslate2
+        info["hasCuda"] = bool(ctranslate2.get_cuda_device_count() > 0)
+    except Exception:
+        pass
+
 print(json.dumps(info))
 `;
 

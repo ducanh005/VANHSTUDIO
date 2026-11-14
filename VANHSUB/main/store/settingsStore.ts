@@ -14,7 +14,17 @@ import { planLegacySecretMigration } from '../security/legacySecrets';
  * - full:    quét toàn khung, giữ TẤT CẢ text tìm được
  * - custom:  quét vùng người dùng kéo chọn (ocrCustomRegion)
  */
-export type OcrMode = 'auto' | 'bottom' | 'full' | 'custom';
+export type OcrMode = 'auto' | 'bottom' | 'full' | 'custom' | 'dual';
+
+export interface OcrDualRegions {
+  top: OcrCustomRegion;
+  bottom: OcrCustomRegion;
+}
+
+export const DEFAULT_OCR_DUAL_REGIONS: OcrDualRegions = {
+  top: { x: 0.05, y: 0.05, w: 0.9, h: 0.35 },
+  bottom: { x: 0.05, y: 0.68, w: 0.9, h: 0.28 },
+};
 
 /** Vùng quét custom — toạ độ theo tỷ lệ 0-1 của khung hình (x,y = đỉnh trái) */
 export interface OcrCustomRegion {
@@ -63,6 +73,8 @@ export interface AppSettings {
   ocrMode: OcrMode;
   /** Vùng quét khi ocrMode = custom (tỷ lệ 0-1); null = chưa chọn */
   ocrCustomRegion: OcrCustomRegion | null;
+  ocrDualRegions: OcrDualRegions;
+  hybridUseGeminiAi: boolean;
   /** Tương thích ngược với ocrRegion cũ */
   ocrRegion?: string;
   /**
@@ -128,7 +140,7 @@ function getStore(): Store<AppSettings> {
         geminiApiKey: '',
         geminiModel: 'gemini-3.8-flash',
         targetLanguage: 'vi',
-        asrModel: 'base',
+        asrModel: 'large-v3-turbo',
         asrEngine: 'faster-whisper',
         asrDevice: 'auto',
         enableDiarization: false,
@@ -145,6 +157,8 @@ function getStore(): Store<AppSettings> {
         ocrFps: 2,
         ocrMode: 'auto',
         ocrCustomRegion: null,
+        ocrDualRegions: DEFAULT_OCR_DUAL_REGIONS,
+        hybridUseGeminiAi: true,
         ocrDualEngine: true,
         glossary: '',
         translationStyleGuide: '',

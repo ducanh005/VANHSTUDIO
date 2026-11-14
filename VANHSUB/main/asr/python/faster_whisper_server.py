@@ -410,7 +410,7 @@ def main():
     parser = argparse.ArgumentParser(description="Faster-Whisper & Diarization Sidecar")
     parser.add_argument("--audio", required=True, help="Input audio WAV file")
     parser.add_argument("--output", required=True, help="Output SRT file path")
-    parser.add_argument("--model", default="base", help="Model name: tiny, base, small, medium, large-v3-turbo")
+    parser.add_argument("--model", default="large-v3-turbo", help="Model name: tiny, base, small, medium, large-v3-turbo")
     parser.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"], help="Compute device")
     parser.add_argument("--compute_type", default="auto", help="Compute type: float16, int8, int8_float16, float32")
     parser.add_argument("--language", default="vi", help="Audio language code (e.g. vi, en, auto)")
@@ -435,10 +435,16 @@ def main():
     if device == "auto":
         has_cuda = False
         try:
-            import torch
-            has_cuda = torch.cuda.is_available()
+            import ctranslate2
+            has_cuda = ctranslate2.get_cuda_device_count() > 0
         except Exception:
             pass
+        if not has_cuda:
+            try:
+                import torch
+                has_cuda = torch.cuda.is_available()
+            except Exception:
+                pass
 
         if has_cuda:
             device = "cuda"

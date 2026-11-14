@@ -72,7 +72,7 @@ export async function runFasterWhisper(
     scriptPath,
     '--audio', audioPath,
     '--output', outputSrtPath,
-    '--model', options.modelName || 'base',
+    '--model', options.modelName || 'large-v3-turbo',
     '--device', options.device || 'auto',
     '--compute_type', options.computeType || 'auto',
     '--language', options.language || 'auto',

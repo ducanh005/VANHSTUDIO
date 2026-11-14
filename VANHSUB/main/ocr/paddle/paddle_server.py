@@ -338,6 +338,22 @@ class TextTrack:
         self.conf = 0.0
         self.crop_path = ""
         self.classification = "OTHER_TEXT"
+        self.zone = None
+
+
+def is_rect_in_region(avg_rect, frame_w, frame_h, region):
+    if not region or not isinstance(region, dict):
+        return False
+    rx0 = float(region.get("x", 0.0))
+    ry0 = float(region.get("y", 0.0))
+    rw = float(region.get("w", 1.0))
+    rh = float(region.get("h", 1.0))
+    rx1, ry1 = rx0 + rw, ry0 + rh
+
+    x0, y0, w, h = avg_rect
+    center_x_ratio = (x0 + w / 2.0) / max(1.0, frame_w)
+    center_y_ratio = (y0 + h / 2.0) / max(1.0, frame_h)
+    return (rx0 <= center_x_ratio <= rx1) and (ry0 <= center_y_ratio <= ry1)
 
     def add_detection(self, frame_idx, box, rect, sharpness, crop):
         self.frames[frame_idx] = {"box": box, "rect": rect, "sharpness": sharpness}
@@ -429,15 +445,26 @@ def filter_recognized_watermarks(recognized_tracks, total_frames, frame_h, ocr_m
     """
     Phát hiện và loại bỏ watermark lặp lại xuyên suốt video (bao gồm cả watermark ở đáy khung hình
     như 'ANGELANJ', 'ANGELANI' bị chia nhỏ thành nhiều track do nền video thay đổi độ sáng).
+    Khi ocr_mode == 'dual', bỏ qua lọc thời lượng cho các track thuộc vùng trên (zone == 'top')
+    vì bảng/thông tin ở vùng trên thường hiển thị kéo dài theo chủ đích người dùng.
     """
     if not recognized_tracks or ocr_mode == "full" or total_frames < 12:
         return recognized_tracks
+
+    preserved_top_tracks = [
+        tr for tr in recognized_tracks
+        if getattr(tr, "zone", None) == "top"
+        and not (len(tr.frames) <= 2 and not has_cjk(tr.text) and len(get_alnum_key(tr.text)) <= 1)
+    ]
+    check_tracks = [tr for tr in recognized_tracks if getattr(tr, "zone", None) != "top"]
+    if not check_tracks:
+        return preserved_top_tracks
 
     # 1. Gom cụm các track có chuỗi chữ cái/số giống nhau (hoặc là chuỗi con của nhau tại cùng vùng y)
     clusters = []
     bucket_px = max(24.0, frame_h * 0.045)
 
-    for tr in recognized_tracks:
+    for tr in check_tracks:
         key = get_alnum_key(tr.text)
         if not key:
             continue
@@ -489,7 +516,7 @@ def filter_recognized_watermarks(recognized_tracks, total_frames, frame_h, ocr_m
 
     # Nếu phát hiện dải y chứa watermark ở sát đáy hoặc đỉnh, kiểm tra thêm các mảnh nhiễu cùng dải y
     filtered = []
-    for tr in recognized_tracks:
+    for tr in check_tracks:
         if tr.track_id in watermark_track_ids:
             continue
         key = get_alnum_key(tr.text)
@@ -519,7 +546,7 @@ def filter_recognized_watermarks(recognized_tracks, total_frames, frame_h, ocr_m
 
         filtered.append(tr)
 
-    return filtered
+    return preserved_top_tracks + filtered
 
 
 def run_pipeline(job):
@@ -552,6 +579,7 @@ def run_pipeline(job):
     if not ocr_mode:
         ocr_mode = "bottom" if offset_ratio > 0.3 else "auto"
     custom_region = job.get("customRegion")  # {"x": float, "y": float, "w": float, "h": float}
+    dual_regions = job.get("dualRegions")  # {"top": {...}, "bottom": {...}}
 
     total_frames = len(frames)
     active_tracks = []
@@ -681,12 +709,23 @@ def run_pipeline(job):
         spans_video = (track.first_frame <= max(2, int(total_frames * 0.15))) and (track.last_frame >= min(total_frames - 3, int(total_frames * 0.85)))
         is_corner = (x1_ratio <= 0.25 or x0_ratio >= 0.75) and (y1_ratio <= 0.25 or y0_ratio >= 0.85)
 
+        in_dual_top = False
+        in_dual_bottom = False
+        if ocr_mode == "dual" and isinstance(dual_regions, dict):
+            in_dual_top = is_rect_in_region(avg_rect, frame_w, frame_h, dual_regions.get("top"))
+            in_dual_bottom = (not in_dual_top) and is_rect_in_region(avg_rect, frame_w, frame_h, dual_regions.get("bottom"))
+
         is_watermark = False
         if total_frames >= 20:
-            if spans_video and (y1_ratio <= 0.30 or is_corner or presence_ratio >= 0.50):
-                is_watermark = True
-            elif total_duration_frames >= 40 and (y1_ratio <= 0.30 or is_corner):
-                is_watermark = True
+            if in_dual_top:
+                # Vùng trên do người dùng chỉ định để lấy bảng/tiêu đề: chỉ bỏ logo góc thật sự tĩnh
+                if is_corner and spans_video and presence_ratio >= 0.70:
+                    is_watermark = True
+            else:
+                if spans_video and (y1_ratio <= 0.30 or is_corner or presence_ratio >= 0.50):
+                    is_watermark = True
+                elif total_duration_frames >= 40 and (y1_ratio <= 0.30 or is_corner):
+                    is_watermark = True
 
         # Quy tắc 3: Phân loại chuẩn SUBTITLE, OVERLAY, OTHER_TEXT
         if is_watermark:
@@ -713,19 +752,18 @@ def run_pipeline(job):
             keep = (track.classification in ("SUBTITLE", "OVERLAY"))
         elif ocr_mode == "custom":
             if custom_region and isinstance(custom_region, dict):
-                cx0 = float(custom_region.get("x", 0.0))
-                cy0 = float(custom_region.get("y", 0.0))
-                cw = float(custom_region.get("w", 1.0))
-                ch = float(custom_region.get("h", 1.0))
-                cx1, cy1 = cx0 + cw, cy0 + ch
-
-                center_x_ratio = (x0 + w / 2.0) / max(1.0, frame_w)
-                center_y_ratio = (y0 + h / 2.0) / max(1.0, frame_h)
-
-                in_custom = (cx0 <= center_x_ratio <= cx1) and (cy0 <= center_y_ratio <= cy1)
-                keep = in_custom and (track.classification != "OTHER_TEXT")
+                keep = is_rect_in_region(avg_rect, frame_w, frame_h, custom_region) and (track.classification != "OTHER_TEXT")
             else:
                 keep = (track.classification == "SUBTITLE")
+        elif ocr_mode == "dual":
+            if in_dual_top:
+                track.zone = "top"
+                keep = (track.classification != "OTHER_TEXT")
+            elif in_dual_bottom:
+                track.zone = "bottom"
+                keep = (track.classification != "OTHER_TEXT")
+            else:
+                keep = False
         else:
             keep = (track.classification == "SUBTITLE")
 
@@ -903,6 +941,7 @@ def run_pipeline(job):
             "firstFrame": track.first_frame,
             "lastFrame": track.last_frame,
             "classification": track.classification,
+            **({"zone": track.zone} if getattr(track, "zone", None) else {}),
         }
         for f_idx in track.frames:
             if 0 <= f_idx < total_frames:

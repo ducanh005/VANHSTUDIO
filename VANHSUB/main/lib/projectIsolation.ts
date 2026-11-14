@@ -7,7 +7,7 @@ export function canonicalArtifactPath(file: string): string {
   catch { return path.resolve(file).toLowerCase(); }
 }
 function resources(task: Task): string[] {
-  return [task.projectDir, task.ttsAudioDir, task.srtPath, task.translatedSrtPath]
+  return [task.projectDir, task.ttsAudioDir, task.srtPath, task.translatedSrtPath, task.overlaySrtPath, task.translatedOverlaySrtPath]
     .filter((file): file is string => !!file).map(canonicalArtifactPath);
 }
 

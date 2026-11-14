@@ -27,6 +27,8 @@ export interface Task {
   speakers?: string[];
   srtPath?: string;
   translatedSrtPath?: string;
+  overlaySrtPath?: string;
+  translatedOverlaySrtPath?: string;
   subtitleRevision?: number;
   ttsNeedsRegeneration?: boolean;
   dubbingPreferences?: import('../../main/lib/dubbingPreferences').DubbingPreferences;

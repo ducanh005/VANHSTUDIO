@@ -37,6 +37,7 @@ export interface MergedOcrLine {
   w?: number;
   h?: number;
   classification?: 'SUBTITLE' | 'OVERLAY' | 'OTHER_TEXT';
+  zone?: 'top' | 'bottom';
   /** Text engine thứ hai đọc cùng crop ('' nếu lượt 2 tắt/đọc hụt) */
   altText?: string;
   altConfidence?: number;
@@ -74,6 +75,7 @@ function mergeLine(line: PaddleOcrLine, alt: CropOcrResult | undefined): MergedO
       w: line.w,
       h: line.h,
       classification: line.classification,
+      zone: line.zone,
       altText: '',
       chosen: 'paddle',
     };
@@ -109,6 +111,7 @@ function mergeLine(line: PaddleOcrLine, alt: CropOcrResult | undefined): MergedO
     w: line.w,
     h: line.h,
     classification: line.classification,
+    zone: line.zone,
     altText,
     altConfidence: alt.confidence,
     similarity,
@@ -161,6 +164,7 @@ export function mergedToFrameResults(merged: MergedOcrFrame[]): OcrFrameResult[]
       w: l.w,
       h: l.h,
       classification: l.classification,
+      zone: l.zone,
     }));
     return {
       text: lines.map((l) => l.text).join(' '),

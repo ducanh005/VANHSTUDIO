@@ -44,7 +44,7 @@ export interface TranscribeResult {
   srtPath: string;
 }
 
-const DEFAULT_MODEL = 'base';
+const DEFAULT_MODEL = 'large-v3-turbo';
 
 /** Các model nodejs-whisper hỗ trợ (bản đa ngôn ngữ — dùng được cho tiếng Việt) */
 const SUPPORTED_MODELS = ['tiny', 'base', 'small', 'medium', 'large', 'large-v3-turbo'];

@@ -57,6 +57,7 @@ export interface ProjectArtifactPaths {
   audioWavPath: string;
   rawSrtPath: string;
   translatedSrtPath: string;
+  translatedOverlaySrtPath: string;
   compiledAssPath: string;
   hardsubPath: string;
   softsubPath: string;
@@ -82,6 +83,7 @@ export function getProjectArtifactPaths(task: Task): ProjectArtifactPaths {
     audioWavPath: path.join(projectDir, `${cleanBase}_audio_16k.wav`),
     rawSrtPath: path.join(projectDir, `${cleanBase}.srt`),
     translatedSrtPath: path.join(projectDir, `${cleanBase}.vi.srt`),
+    translatedOverlaySrtPath: path.join(projectDir, `${cleanBase}.overlay.vi.srt`),
     compiledAssPath: path.join(projectDir, `${cleanBase}.ass`),
     hardsubPath: path.join(projectDir, `${cleanBase}.hardsub.mp4`),
     softsubPath: path.join(projectDir, `${cleanBase}.softsub.mp4`),

@@ -34,6 +34,13 @@ export interface HybridFusionOptions {
    * Mặc định: false.
    */
   deduplicateKaraoke?: boolean;
+
+  /**
+   * Khi bật (Hybrid chế độ 2 vùng / tách bảng): các dòng OCR không khớp lời thoại
+   * nhưng trùng thời điểm đang có tiếng nói Whisper sẽ được đẩy sang `overlaySegments`
+   * thay vì giữ chung trong file phụ đề thoại. Mặc định: false.
+   */
+  routeUnmatchedOverlappingToOverlay?: boolean;
 }
 
 export interface HybridFusionStats {
@@ -41,6 +48,7 @@ export interface HybridFusionStats {
   totalWhisperSegments: number;
   matchedSegments: number;
   bannersPreserved: number;
+  overlaysReclaimed?: number;
   garbageFiltered: number;
   typosRepaired: number;
   diacriticsRestored: number;
@@ -51,6 +59,7 @@ export interface HybridFusionStats {
 
 export interface HybridFusionResult {
   segments: SrtLine[];
+  overlaySegments?: SrtLine[];
   stats: HybridFusionStats;
 }
 
@@ -339,6 +348,20 @@ export function alignTokens(
  * 3. Sửa lỗi chính tả quang học (1/l, 0/O), phục hồi dấu tiếng Việt và bổ sung từ bị khuất.
  * 4. Bảo toàn nguyên vẹn các banner đồ họa / chữ trên màn hình không có tiếng nói.
  */
+function hasCompetingSpeechOverlap(ocr: SrtLine, whisperSegments: SrtLine[]): boolean {
+  const ocrDur = Math.max(1, ocr.endMs - ocr.startMs);
+  let totalOverlapMs = 0;
+  let overlappingCount = 0;
+  for (const w of whisperSegments) {
+    const overlap = Math.min(ocr.endMs, w.endMs) - Math.max(ocr.startMs, w.startMs);
+    if (overlap > 0) {
+      totalOverlapMs += overlap;
+      overlappingCount += 1;
+    }
+  }
+  return overlappingCount >= 2 || totalOverlapMs >= Math.min(600, Math.round(ocrDur * 0.35));
+}
+
 export function fuseOcrAndWhisper(
   ocrSegments: SrtLine[],
   whisperSegments: SrtLine[],
@@ -346,6 +369,7 @@ export function fuseOcrAndWhisper(
 ): HybridFusionResult {
   const toleranceMs = Math.max(0, options?.toleranceMs ?? 800);
   const minSimilarityThreshold = options?.minSimilarityThreshold ?? 0.35;
+  const routeToOverlay = Boolean(options?.routeUnmatchedOverlappingToOverlay);
 
   const ocrToProcess = options?.deduplicateKaraoke
     ? deduplicateProgressiveKaraoke(deduplicateExact(ocrSegments))
@@ -356,6 +380,7 @@ export function fuseOcrAndWhisper(
     totalWhisperSegments: whisperSegments ? whisperSegments.length : 0,
     matchedSegments: 0,
     bannersPreserved: 0,
+    overlaysReclaimed: 0,
     garbageFiltered: 0,
     typosRepaired: 0,
     diacriticsRestored: 0,
@@ -367,9 +392,17 @@ export function fuseOcrAndWhisper(
     if (options?.preserveSpeechOnlyWhisper && whisperSegments && whisperSegments.length > 0) {
       const cleanWhisper = deduplicateExact(whisperSegments);
       stats.speechOnlyPreserved = cleanWhisper.length;
-      return { segments: cleanWhisper, stats };
+      return {
+        segments: cleanWhisper,
+        ...(routeToOverlay ? { overlaySegments: [] } : {}),
+        stats,
+      };
     }
-    return { segments: [], stats };
+    return {
+      segments: [],
+      ...(routeToOverlay ? { overlaySegments: [] } : {}),
+      stats,
+    };
   }
 
   // Trường hợp Whisper rỗng: bảo toàn các dòng OCR hợp lệ như banner hình ảnh, lọc bỏ rác OCR
@@ -394,10 +427,15 @@ export function fuseOcrAndWhisper(
         sourceIds: [line.id],
       });
     }
-    return { segments: cloned, stats };
+    return {
+      segments: cloned,
+      ...(routeToOverlay ? { overlaySegments: [] } : {}),
+      stats,
+    };
   }
 
   const resultSegments: SrtLine[] = [];
+  const reclaimedOverlaySegments: SrtLine[] = [];
   const consumedWhisper = new Set<SrtLine>();
 
   for (let idx = 0; idx < ocrToProcess.length; idx++) {
@@ -479,6 +517,21 @@ export function fuseOcrAndWhisper(
     if (averageScore < minSimilarityThreshold) {
       if (isOcrGarbageLine(ocr, { whisperSegments })) {
         stats.garbageFiltered++;
+        continue;
+      }
+      if (routeToOverlay && hasCompetingSpeechOverlap(ocr, whisperSegments)) {
+        stats.overlaysReclaimed = (stats.overlaysReclaimed || 0) + 1;
+        reclaimedOverlaySegments.push({
+          id: ocr.id || `line-${idx}`,
+          startMs: anchoredStartMs,
+          endMs: anchoredEndMs,
+          text: ocr.text,
+          confidence: ocr.confidence,
+          source: 'ocr',
+          displayStartMs: anchoredStartMs,
+          displayEndMs: anchoredEndMs,
+          sourceIds: ocr.id ? [ocr.id] : undefined,
+        });
         continue;
       }
       stats.bannersPreserved++;
@@ -620,6 +673,7 @@ export function fuseOcrAndWhisper(
 
   return {
     segments: resultSegments,
+    ...(routeToOverlay ? { overlaySegments: reclaimedOverlaySegments } : {}),
     stats,
   };
 }

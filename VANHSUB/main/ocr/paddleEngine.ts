@@ -33,6 +33,8 @@ export interface PaddleOcrLine {
   crop: string;
   /** Phân loại text: SUBTITLE (phụ đề chính), OVERLAY (tiêu đề/banner), OTHER_TEXT (nhiễu) */
   classification?: 'SUBTITLE' | 'OVERLAY' | 'OTHER_TEXT';
+  /** Vùng quét tương ứng khi ocrMode = 'dual' */
+  zone?: 'top' | 'bottom';
 }
 
 export interface PaddleOcrFrame {
@@ -53,10 +55,15 @@ export interface PaddleOcrJob {
   videoHeight: number;
   /** Tỷ lệ offset vùng crop đáy trong khung gốc */
   regionOffsetRatio: number;
-  /** Chế độ quét OCR: auto, bottom, full, custom */
+  /** Chế độ quét OCR: auto, bottom, full, custom, dual */
   ocrMode?: string;
   /** Toạ độ vùng custom (0-1) khi ocrMode = custom */
   customRegion?: { x: number; y: number; w: number; h: number } | null;
+  /** Cặp vùng Trên/Dưới (0-1) khi ocrMode = dual */
+  dualRegions?: {
+    top: { x: number; y: number; w: number; h: number };
+    bottom: { x: number; y: number; w: number; h: number };
+  } | null;
 }
 
 export interface RapidOcrCheck {

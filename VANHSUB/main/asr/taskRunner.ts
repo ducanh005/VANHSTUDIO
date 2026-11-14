@@ -124,7 +124,7 @@ export class TaskRunner {
       TaskStore.update(taskId, {
         progress: 35,
         audioPath: wavPath,
-        stageDescription: `Đang nhận diện giọng nói (${task.asrModel || SettingsStore.get('asrModel') || 'base'})...`,
+        stageDescription: `Đang nhận diện giọng nói (${task.asrModel || SettingsStore.get('asrModel') || 'large-v3-turbo'})...`,
       });
       onUpdate?.();
 
@@ -135,7 +135,7 @@ export class TaskRunner {
       const hfToken = SettingsStore.get('hfToken') as string;
 
       const result = await transcribeUnified(wavPath, {
-        model: task.asrModel || SettingsStore.get('asrModel') || 'base',
+        model: task.asrModel || SettingsStore.get('asrModel') || 'large-v3-turbo',
         asrEngine,
         enableDiarization,
         speakerCount: task.speakerCount,

@@ -234,9 +234,10 @@ export default function ExportPage({ tasks, selectedTaskId: propSelectedTaskId, 
   });
   const [currentVideoTime, setCurrentVideoTime] = useState(0);
 
-  // Bố cục Song ngữ / Lời nhạc kép
+  // Bố cục Song ngữ / Lời nhạc kép / Bảng + Thoại
   const [dualSubtitlesEnabled, setDualSubtitlesEnabled] = useState(false);
   const [dualLayoutPreset, setDualLayoutPreset] = useState<'douyin_music_left' | 'top_bottom_bilingual' | 'custom'>('douyin_music_left');
+  const [dualSecondarySource, setDualSecondarySource] = useState<'auto' | 'original_dialogue' | 'overlay'>('auto');
   const [secondarySrtLines, setSecondarySrtLines] = useState<SrtLine[]>([]);
 
   // Milestone 3: Hiệu ứng Phụ đề Động (Kinetic Typography Presets)
@@ -261,6 +262,44 @@ export default function ExportPage({ tasks, selectedTaskId: propSelectedTaskId, 
   const outputPath = selectedTask?.outputPath;
   const hasTtsAudio = !!selectedTask?.ttsAudioDir && !selectedTask?.ttsNeedsRegeneration;
   const hasBothSrt = !!(selectedTask?.srtPath && selectedTask?.translatedSrtPath);
+  const hasOverlaySrt = !!(selectedTask?.translatedOverlaySrtPath || selectedTask?.overlaySrtPath);
+  const hasMainDialogueSrt = !!(selectedTask?.translatedSrtPath || selectedTask?.srtPath);
+  const hasSecondaryTrack = hasBothSrt || (hasOverlaySrt && hasMainDialogueSrt);
+  const activeOverlayPath = selectedTask?.translatedOverlaySrtPath || selectedTask?.overlaySrtPath || null;
+  const mainDialogueSrtPath = selectedTask?.translatedSrtPath || selectedTask?.srtPath || null;
+  const activeSecondarySrtPath = (() => {
+    if (!selectedTask || !mainDialogueSrtPath) return null;
+    if (dualSecondarySource === 'overlay') return activeOverlayPath;
+    if (dualSecondarySource === 'original_dialogue') {
+      return hasBothSrt
+        ? (mainDialogueSrtPath === selectedTask.translatedSrtPath ? selectedTask.srtPath || null : selectedTask.translatedSrtPath || null)
+        : null;
+    }
+    return activeOverlayPath || (hasBothSrt
+      ? (mainDialogueSrtPath === selectedTask.translatedSrtPath ? selectedTask.srtPath || null : selectedTask.translatedSrtPath || null)
+      : null);
+  })();
+  const previewSecondaryStyle = dualLayoutPreset === 'top_bottom_bilingual'
+    ? {
+        fontName: style.fontName,
+        fontSize: Math.max(14, Math.round((style.fontSize || 22) * 0.85)),
+        primaryColour: '#E0E0E0',
+        alignment: 8 as const,
+        marginV: 30,
+        marginH: 20,
+        isVertical: false,
+        bold: false,
+      }
+    : {
+        fontName: style.fontName,
+        fontSize: Math.max(14, Math.round((style.fontSize || 22) * 0.85)),
+        primaryColour: '#FFE135',
+        alignment: 4 as const,
+        marginV: 25,
+        marginH: 35,
+        isVertical: true,
+        bold: true,
+      };
   const sourceVideoPath = videoSource === 'original'
     ? selectedTask?.filePath
     : videoSource === 'dubbed'
@@ -270,6 +309,12 @@ export default function ExportPage({ tasks, selectedTaskId: propSelectedTaskId, 
     ? selectedTask.dubbedVideoStretchFactor ?? 1 : 1;
 
   useEffect(() => { setVideoSource('auto'); }, [selectedTaskId]);
+  useEffect(() => {
+    setDualSecondarySource('auto');
+    if (selectedTask?.overlaySrtPath || selectedTask?.translatedOverlaySrtPath) {
+      setDualLayoutPreset('top_bottom_bilingual');
+    }
+  }, [selectedTaskId, selectedTask?.overlaySrtPath, selectedTask?.translatedOverlaySrtPath]);
   useEffect(() => {
     setPerLineStyles({});
     setSelectedLineIdx(null);
@@ -284,7 +329,7 @@ export default function ExportPage({ tasks, selectedTaskId: propSelectedTaskId, 
       setSelectedLineIdx(null);
       return;
     }
-    const mainSrtPath = selectedTask.translatedSrtPath || selectedTask.srtPath;
+    const mainSrtPath = mainDialogueSrtPath || activeOverlayPath;
     if (!mainSrtPath || !window.vanhsub?.tasks?.readSrt) {
       setSrtLines([]);
       setSecondarySrtLines([]);
@@ -302,8 +347,8 @@ export default function ExportPage({ tasks, selectedTaskId: propSelectedTaskId, 
         if (!canceled) setSrtLines([]);
       });
 
-    const secSrtPath = selectedTask.translatedSrtPath && selectedTask.srtPath
-      ? (mainSrtPath === selectedTask.translatedSrtPath ? selectedTask.srtPath : selectedTask.translatedSrtPath)
+    const secSrtPath = activeSecondarySrtPath && activeSecondarySrtPath !== mainSrtPath
+      ? activeSecondarySrtPath
       : null;
 
     if (secSrtPath && window.vanhsub?.tasks?.readSrt) {
@@ -324,7 +369,16 @@ export default function ExportPage({ tasks, selectedTaskId: propSelectedTaskId, 
     return () => {
       canceled = true;
     };
-  }, [selectedTaskId, selectedTask?.translatedSrtPath, selectedTask?.srtPath, selectedTask?.subtitleRevision, subtitleTimeScale]);
+  }, [
+    selectedTaskId,
+    selectedTask?.translatedSrtPath,
+    selectedTask?.srtPath,
+    selectedTask?.overlaySrtPath,
+    selectedTask?.translatedOverlaySrtPath,
+    selectedTask?.subtitleRevision,
+    dualSecondarySource,
+    subtitleTimeScale,
+  ]);
 
   const handleUpdateLineStyle = (lineIndex: number, lineStyle: PerLineSubtitleStyle | null) => {
     setPerLineStyles((prev) => {
@@ -404,10 +458,11 @@ export default function ExportPage({ tasks, selectedTaskId: propSelectedTaskId, 
               customMasks: customMaskEnabled ? customMasks.filter((m) => m.enabled !== false) : [],
               watermark: watermarkEnabled && watermark.content ? watermark : null,
               formatOptions: hasCustomFormat ? formatOptions : null,
-              dualSubtitles: dualSubtitlesEnabled && hasBothSrt
+              dualSubtitles: dualSubtitlesEnabled && hasSecondaryTrack
                 ? {
                     enabled: true,
                     layoutPreset: dualLayoutPreset,
+                    secondarySource: dualSecondarySource,
                   }
                 : null,
               kineticConfig: kineticConfig.preset !== 'none' ? kineticConfig : null,
@@ -594,7 +649,8 @@ export default function ExportPage({ tasks, selectedTaskId: propSelectedTaskId, 
                   currentTime={currentVideoTime}
                   onTimeUpdate={setCurrentVideoTime}
                   secondarySrtLines={secondarySrtLines}
-                  dualSubtitlesEnabled={dualSubtitlesEnabled && hasBothSrt}
+                  secondaryStyle={previewSecondaryStyle}
+                  dualSubtitlesEnabled={dualSubtitlesEnabled && hasSecondaryTrack && Boolean(activeSecondarySrtPath)}
                   onUpdateSubtitlePosition={handleUpdateSubtitlePosition}
                   kineticConfig={kineticConfig}
                 />
@@ -1074,14 +1130,16 @@ export default function ExportPage({ tasks, selectedTaskId: propSelectedTaskId, 
                     </div>
                   </div>
 
-                  {/* Cấu hình Bố cục Song ngữ (Dual Subtitles / Lời bài hát kép) */}
-                  {hasBothSrt && (
+                  {/* Cấu hình Bố cục Song ngữ / Bảng & Thoại (Dual Subtitles) */}
+                  {hasSecondaryTrack && (
                     <div className="rounded-md border border-indigo-500/30 bg-indigo-950/20 p-3.5 flex flex-col gap-2.5">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex items-center gap-2">
                           <span className="flex h-2 w-2 rounded-full bg-indigo-400 animate-pulse" />
                           <span className="text-xs font-bold text-indigo-200">
-                            Bố cục Song ngữ / Lời nhạc kép (Dual Tracks)
+                            {hasOverlaySrt
+                              ? 'Bố cục Kép: Phụ đề Thoại + Bảng/Thông tin (Dual Tracks)'
+                              : 'Bố cục Song ngữ / Lời nhạc kép (Dual Tracks)'}
                           </span>
                         </div>
                         <label className="flex items-center gap-2 text-xs text-indigo-300 font-semibold cursor-pointer">
@@ -1096,7 +1154,37 @@ export default function ExportPage({ tasks, selectedTaskId: propSelectedTaskId, 
                       </div>
 
                       {dualSubtitlesEnabled && (
-                        <div className="flex flex-col gap-2 pt-2 border-t border-indigo-500/20 text-xs">
+                        <div className="flex flex-col gap-2.5 pt-2 border-t border-indigo-500/20 text-xs">
+                          {hasBothSrt && hasOverlaySrt && (
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-[11px] text-text-muted">Nguồn Track 2:</span>
+                              {(
+                                [
+                                  ['auto', 'Tự động (Ưu tiên file Bảng trên)'],
+                                  ['overlay', 'Bảng / Thông tin vùng trên'],
+                                  ['original_dialogue', 'Thoại gốc (Song ngữ)'],
+                                ] as const
+                              ).map(([val, label]) => (
+                                <button
+                                  key={val}
+                                  type="button"
+                                  onClick={() => {
+                                    setDualSecondarySource(val);
+                                    if (val === 'overlay' || val === 'auto') {
+                                      setDualLayoutPreset('top_bottom_bilingual');
+                                    }
+                                  }}
+                                  className={`rounded-md border px-2.5 py-1 text-[11px] font-medium transition cursor-pointer ${
+                                    dualSecondarySource === val
+                                      ? 'border-accent/50 bg-accent/20 text-white'
+                                      : 'border-border bg-surface text-text-muted hover:text-text'
+                                  }`}
+                                >
+                                  {label}
+                                </button>
+                              ))}
+                            </div>
+                          )}
                           <span className="text-[11px] text-text">
                             Chọn kiểu kết hợp 2 vị trí:
                           </span>
@@ -1111,11 +1199,11 @@ export default function ExportPage({ tasks, selectedTaskId: propSelectedTaskId, 
                               }`}
                             >
                               <span className="font-semibold text-accent flex items-center gap-1.5">
-                                <span>Douyin Music Layout (Khuyên dùng)</span>
+                                <span>Douyin Music Layout{!hasOverlaySrt ? ' (Khuyên dùng)' : ''}</span>
                               </span>
                               <span className="text-[11px] text-text leading-relaxed">
-                                • <strong>Lời bài hát gốc</strong>: Xếp dọc chạy dài ở mép bên trái màn hình.
-                                <br />• <strong>Lời dịch tiếng Việt</strong>: Hiển thị ngang ở dưới đáy.
+                                • <strong>Track 2</strong>: Xếp dọc chạy dài ở mép bên trái màn hình.
+                                <br />• <strong>Phụ đề chính</strong>: Hiển thị ngang ở dưới đáy.
                               </span>
                             </button>
 
@@ -1129,11 +1217,11 @@ export default function ExportPage({ tasks, selectedTaskId: propSelectedTaskId, 
                               }`}
                             >
                               <span className="font-semibold text-text flex items-center gap-1.5">
-                                <span>Song ngữ Trên - Dưới (Chiếu rạp)</span>
+                                <span>Trên - Dưới (Bảng trên / Song ngữ){hasOverlaySrt ? ' (Khuyên dùng)' : ''}</span>
                               </span>
                               <span className="text-[11px] text-text leading-relaxed">
-                                • <strong>Lời gốc</strong>: Hiển thị ngang ở đỉnh màn hình.
-                                <br />• <strong>Lời dịch</strong>: Hiển thị ngang ở đáy màn hình.
+                                • <strong>{hasOverlaySrt && dualSecondarySource !== 'original_dialogue' ? 'Bảng/Thông tin (Track 2)' : 'Lời gốc'}</strong>: Hiển thị ngang ở đỉnh màn hình.
+                                <br />• <strong>Phụ đề thoại</strong>: Hiển thị ngang ở đáy màn hình.
                               </span>
                             </button>
                           </div>
@@ -1521,11 +1609,16 @@ export default function ExportPage({ tasks, selectedTaskId: propSelectedTaskId, 
                 ) : (
                   <>
                     <span className="font-mono text-text">
-                      {(selectedTask.translatedSrtPath || selectedTask.srtPath || '').split(/[/\\]/).pop()}
+                      {(mainDialogueSrtPath || activeOverlayPath || '').split(/[/\\]/).pop()}
                     </span>
                     {selectedTask.translatedSrtPath && (
                       <span className="ml-1.5 rounded-full border border-accent/40 bg-accent-tint px-2 py-0.5 text-[10px] font-semibold text-accent">
                         dùng bản đã dịch
+                      </span>
+                    )}
+                    {mode === 'hardsub' && dualSubtitlesEnabled && activeSecondarySrtPath && (
+                      <span className="ml-1.5 rounded-full border border-indigo-500/40 bg-indigo-500/15 px-2 py-0.5 text-[10px] font-semibold text-indigo-300">
+                        + Track 2: {activeSecondarySrtPath.split(/[/\\]/).pop()}
                       </span>
                     )}
                   </>

@@ -15,13 +15,18 @@ import {
   X,
 } from 'lucide-react';
 import type { Task } from '../types/task';
-import type { OcrCustomRegion, OcrMode, OcrStartOptions } from '../types/electron';
+import type { OcrCustomRegion, OcrDualRegions, OcrMode, OcrStartOptions } from '../types/electron';
+
+export interface OcrModalStartPayload extends OcrStartOptions {
+  useGeminiAi?: boolean;
+}
 
 interface OcrConfigModalProps {
   isOpen: boolean;
   onClose: () => void;
   task: Task | null;
-  onStartOcr: (options: OcrStartOptions) => Promise<void>;
+  launchPurpose?: 'ocr' | 'hybrid';
+  onStartOcr: (options: OcrModalStartPayload) => Promise<void>;
 }
 
 const OCR_MODES: Array<{
@@ -39,6 +44,13 @@ const OCR_MODES: Array<{
     badgeColor: 'bg-accent-tint text-accent border-accent/40',
   },
   {
+    id: 'dual',
+    label: '2 Vùng (Trên & Dưới)',
+    desc: 'Vùng trên quét bảng/thông tin -> xuất file .overlay.srt riêng; vùng dưới quét lời thoại -> không trùng timeline',
+    badge: 'Tách 2 file',
+    badgeColor: 'border-amber-500/40 bg-amber-500/15 text-amber-300',
+  },
+  {
     id: 'bottom',
     label: 'Bottom',
     desc: 'Chỉ tìm vùng dưới (Dải đáy màn hình ~35%)',
@@ -51,7 +63,7 @@ const OCR_MODES: Array<{
   {
     id: 'custom',
     label: 'Custom',
-    desc: 'Người dùng kéo vùng cần OCR trực tiếp trên video',
+    desc: 'Người dùng kéo 1 vùng cần OCR trực tiếp trên video',
     badge: 'Tuỳ chỉnh',
     badgeColor: 'bg-accent-tint text-accent border-accent/40',
   },
@@ -64,17 +76,26 @@ const DEFAULT_CUSTOM_REGION: OcrCustomRegion = {
   h: 0.28,
 };
 
+const DEFAULT_DUAL_REGIONS: OcrDualRegions = {
+  top: { x: 0.05, y: 0.05, w: 0.90, h: 0.35 },
+  bottom: { x: 0.05, y: 0.68, w: 0.90, h: 0.28 },
+};
+
 export default function OcrConfigModal({
   isOpen,
   onClose,
   task,
+  launchPurpose = 'ocr',
   onStartOcr,
 }: OcrConfigModalProps) {
   const [mode, setMode] = useState<OcrMode>('auto');
   const [language, setLanguage] = useState('vie');
   const [fps, setFps] = useState(2);
   const [dualEngine, setDualEngine] = useState(true);
+  const [useGeminiAi, setUseGeminiAi] = useState(true);
   const [customRegion, setCustomRegion] = useState<OcrCustomRegion>(DEFAULT_CUSTOM_REGION);
+  const [dualRegions, setDualRegions] = useState<OcrDualRegions>(DEFAULT_DUAL_REGIONS);
+  const [activeDualTarget, setActiveDualTarget] = useState<'top' | 'bottom'>('top');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Video preview & drawing state
@@ -96,16 +117,27 @@ export default function OcrConfigModal({
       window.vanhsub.settings.get('ocrFps'),
       window.vanhsub.settings.get('ocrDualEngine'),
       window.vanhsub.settings.get('ocrCustomRegion'),
+      window.vanhsub.settings.get('ocrDualRegions'),
+      window.vanhsub.settings.get('hybridUseGeminiAi'),
     ])
-      .then(([savedMode, savedLang, savedFps, savedDual, savedRegion]) => {
-        if (savedMode && ['auto', 'bottom', 'full', 'custom'].includes(String(savedMode))) {
+      .then(([savedMode, savedLang, savedFps, savedDual, savedRegion, savedDualRegions, savedHybridAi]) => {
+        if (savedMode && ['auto', 'bottom', 'full', 'custom', 'dual'].includes(String(savedMode))) {
           setMode(savedMode as OcrMode);
         }
         if (savedLang) setLanguage(String(savedLang));
         if (savedFps) setFps(Number(savedFps) || 2);
         if (savedDual !== undefined) setDualEngine(Boolean(savedDual));
+        if (savedHybridAi !== undefined) setUseGeminiAi(Boolean(savedHybridAi));
         if (savedRegion && typeof savedRegion === 'object') {
           setCustomRegion(savedRegion as OcrCustomRegion);
+        }
+        if (
+          savedDualRegions &&
+          typeof savedDualRegions === 'object' &&
+          (savedDualRegions as OcrDualRegions).top &&
+          (savedDualRegions as OcrDualRegions).bottom
+        ) {
+          setDualRegions(savedDualRegions as OcrDualRegions);
         }
       })
       .catch(() => {});
@@ -145,16 +177,27 @@ export default function OcrConfigModal({
     }
   };
 
-  // Vẽ vùng custom trên video preview
+  const updateActiveDrawnRegion = (next: OcrCustomRegion) => {
+    if (mode === 'dual') {
+      setDualRegions((prev) => ({
+        ...prev,
+        [activeDualTarget]: next,
+      }));
+    } else {
+      setCustomRegion(next);
+    }
+  };
+
+  // Vẽ vùng custom hoặc dual trên video preview
   const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (mode !== 'custom' || !overlayRef.current) return;
+    if ((mode !== 'custom' && mode !== 'dual') || !overlayRef.current) return;
     const rect = overlayRef.current.getBoundingClientRect();
     const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     const y = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
 
     setIsDrawing(true);
     setDrawStart({ x, y });
-    setCustomRegion({ x, y, w: 0.01, h: 0.01 });
+    updateActiveDrawnRegion({ x, y, w: 0.01, h: 0.01 });
   };
 
   const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -168,7 +211,7 @@ export default function OcrConfigModal({
     const w = Math.max(0.02, Math.abs(currentX - drawStart.x));
     const h = Math.max(0.02, Math.abs(currentY - drawStart.y));
 
-    setCustomRegion({
+    updateActiveDrawnRegion({
       x: Number(x.toFixed(4)),
       y: Number(y.toFixed(4)),
       w: Number(w.toFixed(4)),
@@ -192,27 +235,53 @@ export default function OcrConfigModal({
     }
   };
 
+  const setDualPreset = (preset: 'standard' | 'balanced' | 'compactTop') => {
+    if (preset === 'standard') {
+      setDualRegions({
+        top: { x: 0.05, y: 0.05, w: 0.90, h: 0.35 },
+        bottom: { x: 0.05, y: 0.68, w: 0.90, h: 0.28 },
+      });
+    } else if (preset === 'balanced') {
+      setDualRegions({
+        top: { x: 0.04, y: 0.04, w: 0.92, h: 0.45 },
+        bottom: { x: 0.05, y: 0.66, w: 0.90, h: 0.30 },
+      });
+    } else {
+      setDualRegions({
+        top: { x: 0.05, y: 0.04, w: 0.90, h: 0.25 },
+        bottom: { x: 0.05, y: 0.64, w: 0.90, h: 0.32 },
+      });
+    }
+  };
+
   const handleSubmit = async () => {
     if (!task) return;
     setIsSubmitting(true);
     try {
       // Lưu lại cài đặt vừa chọn để lần sau dùng tiếp
       if (typeof window !== 'undefined' && window.vanhsub?.settings) {
-        await Promise.all([
+        const updates: Array<Promise<any>> = [
           window.vanhsub.settings.set('ocrMode', mode),
           window.vanhsub.settings.set('ocrLanguage', language),
           window.vanhsub.settings.set('ocrFps', fps),
           window.vanhsub.settings.set('ocrDualEngine', dualEngine),
           window.vanhsub.settings.set('ocrCustomRegion', customRegion),
-        ]).catch(() => {});
+          window.vanhsub.settings.set('ocrDualRegions', dualRegions),
+        ];
+        if (launchPurpose === 'hybrid') {
+          updates.push(window.vanhsub.settings.set('hybridUseGeminiAi', useGeminiAi));
+        }
+        await Promise.all(updates).catch(() => {});
       }
 
       await onStartOcr({
         mode,
         customRegion: mode === 'custom' ? customRegion : null,
+        dualRegions: mode === 'dual' ? dualRegions : null,
         language,
         fps,
         dualEngine,
+        ...(launchPurpose === 'hybrid' ? { useGeminiAi } : {}),
       });
 
       onClose();
@@ -236,14 +305,18 @@ export default function OcrConfigModal({
           <div className="flex items-center justify-between border-b border-border pb-4">
             <div className="flex items-center gap-3">
               <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-accent-tint border border-accent/40 text-accent">
-                <ScanText className="h-5 w-5" />
+                {launchPurpose === 'hybrid' ? <Sparkles className="h-5 w-5" /> : <ScanText className="h-5 w-5" />}
               </div>
               <div>
                 <Dialog.Title className="text-sm font-bold text-white">
-                  Cấu hình Quét Phụ Đề Cứng (OCR)
+                  {launchPurpose === 'hybrid'
+                    ? 'Cấu hình Kết hợp Whisper + OCR'
+                    : 'Cấu hình Quét Phụ Đề Cứng (OCR)'}
                 </Dialog.Title>
                 <Dialog.Description className="text-xs text-text-muted mt-0.5">
-                  Chọn chế độ quét phụ đề hardsub từ video bằng AI
+                  {launchPurpose === 'hybrid'
+                    ? 'Chọn vùng quét chữ kết hợp Whisper ASR & Gemini AI để tách bảng trên và thoại dưới'
+                    : 'Chọn chế độ quét phụ đề hardsub từ video bằng AI'}
                   {task && <span className="text-text font-medium"> — {task.fileName}</span>}
                 </Dialog.Description>
               </div>
@@ -306,39 +379,100 @@ export default function OcrConfigModal({
               </div>
             </div>
 
-            {/* Khung video preview khi chọn Custom */}
-            {mode === 'custom' && (
+            {/* Khung video preview khi chọn Custom hoặc 2 Vùng (Dual) */}
+            {(mode === 'custom' || mode === 'dual') && (
               <div className="rounded-lg border border-border bg-bg p-4 space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2 font-medium text-text">
                     <Crop className="h-4 w-4 text-accent" />
-                    <span>Kéo thả chuột trên khung hình để chọn vùng quét</span>
+                    <span>
+                      {mode === 'dual'
+                        ? 'Chọn vùng muốn chỉnh rồi kéo thả chuột trực tiếp trên video'
+                        : 'Kéo thả chuột trên khung hình để chọn vùng quét'}
+                    </span>
                   </div>
-                  <div className="flex items-center gap-1.5 text-[11px]">
-                    <span className="text-text-muted">Vùng mẫu:</span>
-                    <button
-                      type="button"
-                      onClick={() => setPresetRegion('bottom30')}
-                      className="rounded-lg border border-border bg-surface px-2 py-1 text-text hover:bg-surface-2 hover:text-white cursor-pointer"
-                    >
-                      30% Đáy
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPresetRegion('bottom50')}
-                      className="rounded-lg border border-border bg-surface px-2 py-1 text-text hover:bg-surface-2 hover:text-white cursor-pointer"
-                    >
-                      50% Dưới
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPresetRegion('full')}
-                      className="rounded-lg border border-border bg-surface px-2 py-1 text-text hover:bg-surface-2 hover:text-white cursor-pointer"
-                    >
-                      Toàn khung
-                    </button>
-                  </div>
+                  {mode === 'custom' ? (
+                    <div className="flex items-center gap-1.5 text-[11px]">
+                      <span className="text-text-muted">Vùng mẫu:</span>
+                      <button
+                        type="button"
+                        onClick={() => setPresetRegion('bottom30')}
+                        className="rounded-lg border border-border bg-surface px-2 py-1 text-text hover:bg-surface-2 hover:text-white cursor-pointer"
+                      >
+                        30% Đáy
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPresetRegion('bottom50')}
+                        className="rounded-lg border border-border bg-surface px-2 py-1 text-text hover:bg-surface-2 hover:text-white cursor-pointer"
+                      >
+                        50% Dưới
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPresetRegion('full')}
+                        className="rounded-lg border border-border bg-surface px-2 py-1 text-text hover:bg-surface-2 hover:text-white cursor-pointer"
+                      >
+                        Toàn khung
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                      <span className="text-text-muted">Mẫu 2 vùng:</span>
+                      <button
+                        type="button"
+                        onClick={() => setDualPreset('standard')}
+                        className="rounded-lg border border-border bg-surface px-2 py-1 text-text hover:bg-surface-2 hover:text-white cursor-pointer"
+                      >
+                        Trên 35% + Dưới 28%
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDualPreset('balanced')}
+                        className="rounded-lg border border-border bg-surface px-2 py-1 text-text hover:bg-surface-2 hover:text-white cursor-pointer"
+                      >
+                        Nửa trên + Đáy 30%
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDualPreset('compactTop')}
+                        className="rounded-lg border border-border bg-surface px-2 py-1 text-text hover:bg-surface-2 hover:text-white cursor-pointer"
+                      >
+                        Bảng 25% + Dưới 32%
+                      </button>
+                    </div>
+                  )}
                 </div>
+
+                {mode === 'dual' && (
+                  <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-surface p-2">
+                    <span className="text-[11px] text-text-muted px-1">Đang vẽ vùng:</span>
+                    <button
+                      type="button"
+                      onClick={() => setActiveDualTarget('top')}
+                      className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-[11px] font-semibold transition cursor-pointer ${
+                        activeDualTarget === 'top'
+                          ? 'border-amber-400 bg-amber-500/20 text-amber-200 ring-1 ring-amber-400/40'
+                          : 'border-border bg-bg text-text-muted hover:text-white'
+                      }`}
+                    >
+                      <span className="h-2.5 w-2.5 rounded-sm bg-amber-400" />
+                      <span>Vùng Trên: Bảng / Thông tin (File 2)</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveDualTarget('bottom')}
+                      className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-[11px] font-semibold transition cursor-pointer ${
+                        activeDualTarget === 'bottom'
+                          ? 'border-accent bg-accent-tint text-accent ring-1 ring-accent/40'
+                          : 'border-border bg-bg text-text-muted hover:text-white'
+                      }`}
+                    >
+                      <span className="h-2.5 w-2.5 rounded-sm bg-accent" />
+                      <span>Vùng Dưới: Phụ đề thoại (File 1)</span>
+                    </button>
+                  </div>
+                )}
 
                 {/* Video và Bounding Box Canvas */}
                 <div
@@ -360,20 +494,54 @@ export default function OcrConfigModal({
                     <div className="text-text-faint">Không thể xem trước video</div>
                   )}
 
-                  {/* Vùng chọn Bounding Box */}
-                  <div
-                    className="absolute pointer-events-none rounded border-2 border-accent/40 bg-accent-tint transition-all duration-75"
-                    style={{
-                      left: `${customRegion.x * 100}%`,
-                      top: `${customRegion.y * 100}%`,
-                      width: `${customRegion.w * 100}%`,
-                      height: `${customRegion.h * 100}%`,
-                    }}
-                  >
-                    <div className="absolute -top-5 left-0 rounded bg-accent px-1.5 py-0.5 font-mono text-[9px] font-bold text-slate-950 shadow">
-                      Vùng quét OCR ({(customRegion.w * 100).toFixed(0)}% × {(customRegion.h * 100).toFixed(0)}%)
+                  {mode === 'custom' ? (
+                    <div
+                      className="absolute pointer-events-none rounded border-2 border-accent/60 bg-accent-tint transition-all duration-75"
+                      style={{
+                        left: `${customRegion.x * 100}%`,
+                        top: `${customRegion.y * 100}%`,
+                        width: `${customRegion.w * 100}%`,
+                        height: `${customRegion.h * 100}%`,
+                      }}
+                    >
+                      <div className="absolute -top-5 left-0 rounded bg-accent px-1.5 py-0.5 font-mono text-[9px] font-bold text-slate-950 shadow">
+                        Vùng quét OCR ({(customRegion.w * 100).toFixed(0)}% × {(customRegion.h * 100).toFixed(0)}%)
+                      </div>
                     </div>
-                  </div>
+                  ) : (
+                    <>
+                      <div
+                        className={`absolute pointer-events-none rounded border-2 bg-amber-500/15 transition-all duration-75 ${
+                          activeDualTarget === 'top' ? 'border-amber-400 ring-2 ring-amber-400/40' : 'border-amber-500/50 opacity-80'
+                        }`}
+                        style={{
+                          left: `${dualRegions.top.x * 100}%`,
+                          top: `${dualRegions.top.y * 100}%`,
+                          width: `${dualRegions.top.w * 100}%`,
+                          height: `${dualRegions.top.h * 100}%`,
+                        }}
+                      >
+                        <div className="absolute -top-5 left-0 rounded bg-amber-400 px-1.5 py-0.5 font-mono text-[9px] font-bold text-slate-950 shadow">
+                          Vùng Trên: Bảng/Overlay ({(dualRegions.top.w * 100).toFixed(0)}% × {(dualRegions.top.h * 100).toFixed(0)}%)
+                        </div>
+                      </div>
+                      <div
+                        className={`absolute pointer-events-none rounded border-2 bg-accent-tint transition-all duration-75 ${
+                          activeDualTarget === 'bottom' ? 'border-accent ring-2 ring-accent/40' : 'border-accent/50 opacity-80'
+                        }`}
+                        style={{
+                          left: `${dualRegions.bottom.x * 100}%`,
+                          top: `${dualRegions.bottom.y * 100}%`,
+                          width: `${dualRegions.bottom.w * 100}%`,
+                          height: `${dualRegions.bottom.h * 100}%`,
+                        }}
+                      >
+                        <div className="absolute -top-5 left-0 rounded bg-accent px-1.5 py-0.5 font-mono text-[9px] font-bold text-slate-950 shadow">
+                          Vùng Dưới: Lời thoại ({(dualRegions.bottom.w * 100).toFixed(0)}% × {(dualRegions.bottom.h * 100).toFixed(0)}%)
+                        </div>
+                      </div>
+                    </>
+                  )}
                 </div>
 
                 {/* Thanh điều khiển phát video để chọn frame có phụ đề */}
@@ -402,21 +570,39 @@ export default function OcrConfigModal({
                 </div>
 
                 {/* Toạ độ vùng chọn */}
-                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-2 font-mono text-[11px] text-text-muted">
-                  <span>
-                    Toạ độ:{' '}
-                    <strong className="text-white">
-                      X: {(customRegion.x * 100).toFixed(1)}%, Y: {(customRegion.y * 100).toFixed(1)}%
-                    </strong>{' '}
-                    | Kích thước:{' '}
-                    <strong className="text-accent">
-                      W: {(customRegion.w * 100).toFixed(1)}%, H: {(customRegion.h * 100).toFixed(1)}%
-                    </strong>
-                  </span>
-                  <span className="text-[10px] text-text-muted">
-                    Kéo chuột trên video bất kỳ lúc nào để vẽ lại
-                  </span>
-                </div>
+                {mode === 'custom' ? (
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-2 font-mono text-[11px] text-text-muted">
+                    <span>
+                      Toạ độ:{' '}
+                      <strong className="text-white">
+                        X: {(customRegion.x * 100).toFixed(1)}%, Y: {(customRegion.y * 100).toFixed(1)}%
+                      </strong>{' '}
+                      | Kích thước:{' '}
+                      <strong className="text-accent">
+                        W: {(customRegion.w * 100).toFixed(1)}%, H: {(customRegion.h * 100).toFixed(1)}%
+                      </strong>
+                    </span>
+                    <span className="text-[10px] text-text-muted">
+                      Kéo chuột trên video bất kỳ lúc nào để vẽ lại
+                    </span>
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-2 font-mono text-[11px] text-text-muted">
+                    <span>
+                      Trên:{' '}
+                      <strong className="text-amber-300">
+                        Y {(dualRegions.top.y * 100).toFixed(0)}%..{((dualRegions.top.y + dualRegions.top.h) * 100).toFixed(0)}%
+                      </strong>{' '}
+                      | Dưới:{' '}
+                      <strong className="text-accent">
+                        Y {(dualRegions.bottom.y * 100).toFixed(0)}%..{((dualRegions.bottom.y + dualRegions.bottom.h) * 100).toFixed(0)}%
+                      </strong>
+                    </span>
+                    <span className="text-[10px] text-text-muted">
+                      Xuất 2 file: phụ đề chính + file .overlay.srt
+                    </span>
+                  </div>
+                )}
               </div>
             )}
 
@@ -453,7 +639,7 @@ export default function OcrConfigModal({
                 </select>
               </div>
 
-              <div className="sm:col-span-2 pt-1">
+              <div className="sm:col-span-2 pt-1 space-y-2">
                 <label className="flex cursor-pointer items-start gap-2.5 rounded-md border border-border bg-surface p-2.5">
                   <input
                     type="checkbox"
@@ -470,6 +656,25 @@ export default function OcrConfigModal({
                     </span>
                   </div>
                 </label>
+
+                {launchPurpose === 'hybrid' && (
+                  <label className="flex cursor-pointer items-start gap-2.5 rounded-md border border-indigo-500/30 bg-indigo-950/20 p-2.5">
+                    <input
+                      type="checkbox"
+                      checked={useGeminiAi}
+                      onChange={(e) => setUseGeminiAi(e.target.checked)}
+                      className="mt-0.5 h-4 w-4 shrink-0 accent-indigo-400 rounded"
+                    />
+                    <div>
+                      <span className="font-semibold text-indigo-200 block">
+                        Dùng Gemini AI đối chiếu Whisper ASR & OCR (Khuyên dùng)
+                      </span>
+                      <span className="text-[11px] text-text-muted block mt-0.5">
+                        So sánh câu thoại từ giọng nói (ASR) với chữ quét dưới màn hình (OCR) để sửa từ đồng âm/mất dấu và tự đẩy bảng/biểu đồ lạc sang file .overlay.srt.
+                      </span>
+                    </div>
+                  </label>
+                )}
               </div>
             </div>
           </div>
@@ -492,10 +697,18 @@ export default function OcrConfigModal({
             >
               {isSubmitting ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
+              ) : launchPurpose === 'hybrid' ? (
+                <Sparkles className="h-4 w-4" />
               ) : (
                 <ScanText className="h-4 w-4" />
               )}
-              <span>{isSubmitting ? 'Đang khởi động...' : 'Bắt đầu quét OCR'}</span>
+              <span>
+                {isSubmitting
+                  ? 'Đang khởi động...'
+                  : launchPurpose === 'hybrid'
+                    ? 'Bắt đầu Kết hợp Whisper + OCR'
+                    : 'Bắt đầu quét OCR'}
+              </span>
             </button>
           </div>
         </Dialog.Content>

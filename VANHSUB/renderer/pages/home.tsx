@@ -106,7 +106,7 @@ export default function HomePage() {
   const [downloadModalOpen, setDownloadModalOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const [asrModel, setAsrModel] = useState('base');
+  const [asrModel, setAsrModel] = useState('large-v3-turbo');
   const [defaultTtsVoice, setDefaultTtsVoice] = useState('vi-VN-HoaiMyNeural');
   const defaultTtsLabel = { edge: 'Edge TTS', tiktok: 'TikTok TTS', viettts: 'Local TTS' }[engineForVoice(defaultTtsVoice)];
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
@@ -241,7 +241,7 @@ export default function HomePage() {
         if (mounted) setDefaultTtsVoice(String(value || 'vi-VN-HoaiMyNeural'));
       }).catch(() => {});
       if (key === 'asrModel') window.vanhsub.settings.get(key).then((value) => {
-        if (mounted) setAsrModel(String(value || 'base'));
+        if (mounted) setAsrModel(String(value || 'large-v3-turbo'));
       }).catch(() => {});
     });
     return () => { mounted = false; unsubscribe(); };

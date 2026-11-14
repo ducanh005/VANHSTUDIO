@@ -24,7 +24,34 @@ import {
 export interface DualSubtitleOption {
   enabled: boolean;
   layoutPreset?: 'douyin_music_left' | 'top_bottom_bilingual' | 'custom';
+  secondarySource?: 'auto' | 'original_dialogue' | 'overlay';
   secondaryStyle?: Partial<GlobalAssStyle>;
+}
+
+function resolveSecondaryTrackPath(
+  task: Task,
+  mainSrtPath: string,
+  secondarySource?: DualSubtitleOption['secondarySource'],
+): string | undefined {
+  const overlayPath = task.translatedOverlaySrtPath || task.overlaySrtPath;
+  const companionDialoguePath =
+    mainSrtPath === task.translatedSrtPath ? task.srtPath : task.translatedSrtPath;
+
+  if (secondarySource === 'overlay') {
+    return overlayPath && fs.existsSync(overlayPath) ? overlayPath : undefined;
+  }
+  if (secondarySource === 'original_dialogue') {
+    return companionDialoguePath && fs.existsSync(companionDialoguePath)
+      ? companionDialoguePath
+      : undefined;
+  }
+  if (overlayPath && overlayPath !== mainSrtPath && fs.existsSync(overlayPath)) {
+    return overlayPath;
+  }
+  if (companionDialoguePath && companionDialoguePath !== mainSrtPath && fs.existsSync(companionDialoguePath)) {
+    return companionDialoguePath;
+  }
+  return undefined;
 }
 
 export interface AdvancedExportOptions {
@@ -140,7 +167,7 @@ export class ExportRunner {
     const task = TaskStore.getById(taskId);
     if (!task) throw new Error(`Không tìm thấy tác vụ ID: ${taskId}`);
 
-    const rawSrtPath = task.translatedSrtPath || task.srtPath;
+    const rawSrtPath = task.translatedSrtPath || task.srtPath || task.translatedOverlaySrtPath || task.overlaySrtPath;
     if (!rawSrtPath) {
       throw new Error('Tác vụ chưa có file phụ đề để xuất video.');
     }
@@ -187,7 +214,7 @@ export class ExportRunner {
     const task = TaskStore.getById(taskId);
     if (!task) throw new Error(`Không tìm thấy tác vụ ID: ${taskId}`);
 
-    const rawSrtPath = task.translatedSrtPath || task.srtPath;
+    const rawSrtPath = task.translatedSrtPath || task.srtPath || task.translatedOverlaySrtPath || task.overlaySrtPath;
     if (!rawSrtPath) {
       throw new Error('Tác vụ chưa có file phụ đề để xuất video.');
     }
@@ -253,7 +280,10 @@ export class ExportRunner {
 
       if (mode === 'hardsub') {
         const hasPerLine = advancedOptions?.perLineStyles && Object.keys(advancedOptions.perLineStyles).length > 0;
-        const hasDual = !!(advancedOptions?.dualSubtitles?.enabled && task.translatedSrtPath && task.srtPath);
+        const secSrtPath = advancedOptions?.dualSubtitles?.enabled
+          ? resolveSecondaryTrackPath(task, rawSrtPath, advancedOptions.dualSubtitles.secondarySource)
+          : undefined;
+        const hasDual = Boolean(secSrtPath);
         const hasVertical = !!style?.isVertical;
         const hasCustomPos = !!(style?.posPercent || (style?.marginH !== undefined && style.marginH !== 20));
         const hasKinetic = !!(advancedOptions?.kineticConfig && advancedOptions.kineticConfig.preset !== 'none');
@@ -318,23 +348,24 @@ export class ExportRunner {
           let secondaryItems: any[] | undefined = undefined;
           let secondaryStyle: Partial<GlobalAssStyle> | undefined = undefined;
 
-          if (hasDual) {
-            // Xác định file phụ: nếu file chính là translated thì file phụ là original (lời nhạc/gốc)
-            const secSrtPath = rawSrtPath === task.translatedSrtPath ? task.srtPath! : task.translatedSrtPath!;
-            if (fs.existsSync(secSrtPath)) {
-              const secContent = fs.readFileSync(secSrtPath, 'utf-8');
-              const secParsed = scaleSrtLines(parseSrt(secContent), subtitleTimeScale);
-              secondaryItems = secParsed.map((line) => ({
-                id: line.id,
-                startMs: line.startMs,
-                endMs: line.endMs,
-                text: line.text,
-                speaker: line.speaker,
-                words: line.words,
-              }));
+          if (hasDual && secSrtPath) {
+            const secContent = fs.readFileSync(secSrtPath, 'utf-8');
+            const secParsed = scaleSrtLines(parseSrt(secContent), subtitleTimeScale);
+            secondaryItems = secParsed.map((line) => ({
+              id: line.id,
+              startMs: line.startMs,
+              endMs: line.endMs,
+              text: line.text,
+              speaker: line.speaker,
+              words: line.words,
+            }));
 
-              const preset = advancedOptions?.dualSubtitles?.layoutPreset || 'douyin_music_left';
-              if (preset === 'douyin_music_left') {
+            const isOverlaySec =
+              secSrtPath === task.overlaySrtPath || secSrtPath === task.translatedOverlaySrtPath;
+            const preset =
+              advancedOptions?.dualSubtitles?.layoutPreset ||
+              (isOverlaySec ? 'top_bottom_bilingual' : 'douyin_music_left');
+            if (preset === 'douyin_music_left') {
                 secondaryStyle = {
                   fontName: style?.fontName || 'Arial',
                   fontSize: Math.max(14, Math.round((style?.fontSize || 22) * 0.85)),
@@ -369,7 +400,6 @@ export class ExportRunner {
               } else {
                 secondaryStyle = advancedOptions?.dualSubtitles?.secondaryStyle;
               }
-            }
           }
 
           const assContent = compileToAss(items, {

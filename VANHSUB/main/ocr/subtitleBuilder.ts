@@ -25,6 +25,7 @@ interface TextDetection {
   w?: number;
   h?: number;
   classification?: 'SUBTITLE' | 'OVERLAY' | 'OTHER_TEXT';
+  zone?: 'top' | 'bottom';
 }
 
 interface ActiveTrack {
@@ -36,6 +37,7 @@ interface ActiveTrack {
   w?: number;
   h?: number;
   classification?: 'SUBTITLE' | 'OVERLAY' | 'OTHER_TEXT';
+  zone?: 'top' | 'bottom';
   detections: TextDetection[];
 }
 
@@ -52,6 +54,7 @@ export interface IntermediateSubtitleSegment {
   w?: number;
   h?: number;
   classification?: 'SUBTITLE' | 'OVERLAY' | 'OTHER_TEXT';
+  zone?: 'top' | 'bottom';
 }
 
 /**
@@ -59,9 +62,14 @@ export interface IntermediateSubtitleSegment {
  * Tránh gộp text ở vị trí khác nhau (ví dụ: title/overlay ở trên đỉnh vs phụ đề ở đáy).
  */
 function isSpatiallyCompatible(
-  det: { y0: number; h?: number; classification?: string },
-  track: { y0: number; h?: number; classification?: string },
+  det: { y0: number; h?: number; classification?: string; zone?: 'top' | 'bottom' },
+  track: { y0: number; h?: number; classification?: string; zone?: 'top' | 'bottom' },
 ): boolean {
+  // Nếu đã gắn nhãn zone rõ ràng ('top' vs 'bottom'), không bao giờ gộp chéo vùng
+  if (det.zone && track.zone && det.zone !== track.zone) {
+    return false;
+  }
+
   // Nếu 1 trong 2 không có tọa độ y (y0 < 0), cho phép khớp dựa trên text
   if (det.y0 < 0 || track.y0 < 0) return true;
 
@@ -85,18 +93,22 @@ function isSpatiallyCompatible(
  * Nhóm text theo mergeKey, tính điểm = count * 2.0 + (avgConf / 100.0).
  * Văn bản chiếm ưu thế sẽ thắng các lỗi OCR chập chờn (1-2 frame typo).
  */
-function selectStableText(detections: TextDetection[]): { text: string; confidence: number } {
+function selectStableText(
+  detections: TextDetection[],
+  preserveNewlines: boolean = false,
+): { text: string; confidence: number } {
+  const normFn = (raw: string) => (preserveNewlines ? normalizeMultilineText(raw) : normalizeText(raw));
   if (detections.length === 0) return { text: '', confidence: 0 };
   if (detections.length === 1) {
     return {
-      text: normalizeText(detections[0].text),
+      text: normFn(detections[0].text),
       confidence: Math.round(detections[0].confidence),
     };
   }
 
   const groups = new Map<string, { count: number; totalConf: number; samples: string[] }>();
   for (const d of detections) {
-    const norm = normalizeText(d.text);
+    const norm = normFn(d.text);
     const key = mergeKey(norm);
     if (!key) continue;
     const g = groups.get(key) || { count: 0, totalConf: 0, samples: [] };
@@ -108,7 +120,7 @@ function selectStableText(detections: TextDetection[]): { text: string; confiden
 
   if (groups.size === 0) {
     return {
-      text: normalizeText(detections[0].text),
+      text: normFn(detections[0].text),
       confidence: Math.round(detections[0].confidence),
     };
   }
@@ -185,6 +197,7 @@ function groupFrameLinesIntoRows(lines: Array<{
   w?: number;
   h?: number;
   classification?: 'SUBTITLE' | 'OVERLAY' | 'OTHER_TEXT';
+  zone?: 'top' | 'bottom';
 }>): Array<{
   text: string;
   confidence: number;
@@ -193,6 +206,7 @@ function groupFrameLinesIntoRows(lines: Array<{
   w?: number;
   h?: number;
   classification?: 'SUBTITLE' | 'OVERLAY' | 'OTHER_TEXT';
+  zone?: 'top' | 'bottom';
 }> {
   if (lines.length <= 1) return lines;
 
@@ -240,6 +254,7 @@ function groupFrameLinesIntoRows(lines: Array<{
     const w = maxRight - x0;
     const h = maxBottom - y0;
     const classification = row[0].classification;
+    const zone = row.find((l) => l.zone)?.zone;
 
     return {
       text,
@@ -249,6 +264,7 @@ function groupFrameLinesIntoRows(lines: Array<{
       w,
       h,
       classification,
+      zone,
     };
   });
 }
@@ -259,7 +275,8 @@ function groupFrameLinesIntoRows(lines: Array<{
 export function buildSubtitleSegmentsWithStats(
   frames: OcrFrameResult[],
   frameIntervalMs: number,
-): { segments: SrtLine[]; stats: SubtitleBuilderStats } {
+  options?: { splitStaticBleed?: boolean },
+): { segments: SrtLine[]; overlaySegments?: SrtLine[]; stats: SubtitleBuilderStats } {
   let totalDetections = 0;
   for (const f of frames) {
     const rawLines = f.lines && f.lines.length > 0 ? f.lines : (f.text ? [{ text: f.text, confidence: f.confidence, y0: -1 }] : []);
@@ -297,6 +314,7 @@ export function buildSubtitleSegmentsWithStats(
         w: line.w,
         h: line.h,
         classification: line.classification,
+        zone: line.zone,
       });
     }
 
@@ -353,6 +371,7 @@ export function buildSubtitleSegmentsWithStats(
         if (det.w !== undefined) tr.w = det.w;
         if (det.h !== undefined) tr.h = det.h;
         if (det.classification) tr.classification = det.classification;
+        if (det.zone) tr.zone = det.zone;
       } else {
         // Tạo track mới
         const newTrack: ActiveTrack = {
@@ -364,6 +383,7 @@ export function buildSubtitleSegmentsWithStats(
           w: det.w,
           h: det.h,
           classification: det.classification,
+          zone: det.zone,
           detections: [det],
         };
         activeTracks.push(newTrack);
@@ -402,16 +422,33 @@ export function buildSubtitleSegmentsWithStats(
       w: tr.w,
       h: tr.h,
       classification: tr.classification,
+      zone: tr.zone,
     });
   }
 
-  const segments = deduplicateSubtitleSegments(intermediateSegments, frameIntervalMs);
+  // Nếu bật splitStaticBleed (chế độ dual): tách các dòng tĩnh/bảng nằm trên phần thoại trong cùng vùng dưới
+  // TRƯỚC khi deduplicate cắt ngắn timestamp theo thứ tự tuyến tính.
+  let dialogueInputs = intermediateSegments;
+  let overlaySegments: SrtLine[] | undefined;
+  if (options?.splitStaticBleed) {
+    const split = splitStaticBleedFromSegments(intermediateSegments);
+    dialogueInputs = split.dialogueSegments;
+    if (split.bleedSegments.length > 0) {
+      const collapsed = collapseSimultaneousOverlaySegments(split.bleedSegments, frameIntervalMs);
+      overlaySegments = deduplicateSubtitleSegments(collapsed, frameIntervalMs, { preserveNewlines: true });
+    } else {
+      overlaySegments = [];
+    }
+  }
+
+  const segments = deduplicateSubtitleSegments(dialogueInputs, frameIntervalMs);
   const highConfidence = segments.filter((s) => !s.needsReview).length;
   const needsReview = segments.filter((s) => s.needsReview).length;
   const duplicatesMerged = Math.max(0, totalDetections - segments.length);
 
   return {
     segments,
+    ...(options?.splitStaticBleed ? { overlaySegments } : {}),
     stats: {
       framesScanned: frames.length,
       textDetections: totalDetections,
@@ -433,6 +470,325 @@ export function buildSubtitleSegments(
   frameIntervalMs: number,
 ): SrtLine[] {
   return buildSubtitleSegmentsWithStats(frames, frameIntervalMs).segments;
+}
+
+/**
+ * Tách các segment tĩnh (bảng/chú thích tràn từ vùng trên xuống phần trên của vùng dưới)
+ * khỏi phụ đề thoại khi chúng nằm cao hơn (`y0` nhỏ hơn) và đứng yên suốt >= 2 lượt thoại
+ * thay đổi liên tiếp bên dưới.
+ */
+export function splitStaticBleedFromSegments(
+  segments: IntermediateSubtitleSegment[],
+): { dialogueSegments: IntermediateSubtitleSegment[]; bleedSegments: IntermediateSubtitleSegment[] } {
+  if (segments.length <= 1) {
+    return { dialogueSegments: [...segments], bleedSegments: [] };
+  }
+
+  const bleedIndices = new Set<number>();
+
+  for (let i = 0; i < segments.length; i++) {
+    const cand = segments[i];
+    if (cand.zone === 'top') {
+      bleedIndices.add(i);
+      continue;
+    }
+
+    const candDuration = cand.endMs - cand.startMs;
+    const candY0 = cand.y0 ?? -1;
+    if (candY0 < 0 || candDuration < 2000) continue;
+
+    const minVerticalGap = Math.max(20, Math.round((cand.h ?? 24) * 0.6));
+    const lowerOverlapping = segments.filter((other, j) => {
+      if (j === i) return false;
+      const otherY0 = other.y0 ?? -1;
+      if (otherY0 < 0) return false;
+      if (otherY0 <= candY0 + minVerticalGap) return false;
+      if (isSpatiallyCompatible(
+        { y0: candY0, h: cand.h, classification: cand.classification, zone: cand.zone },
+        { y0: otherY0, h: other.h, classification: other.classification, zone: other.zone },
+      )) {
+        return false;
+      }
+
+      const overlap = Math.min(cand.endMs, other.endMs) - Math.max(cand.startMs, other.startMs);
+      if (overlap < 300) return false;
+
+      // Hai hàng của cùng 1 bảng tĩnh có cùng khung giờ không tính là "lượt thoại thay đổi"
+      const sameSpan =
+        Math.abs(other.startMs - cand.startMs) <= 600 &&
+        Math.abs(other.endMs - cand.endMs) <= 600;
+      if (sameSpan) return false;
+
+      return true;
+    });
+
+    if (lowerOverlapping.length === 0) continue;
+
+    lowerOverlapping.sort((a, b) => a.startMs - b.startMs);
+    const distinctTurns: IntermediateSubtitleSegment[] = [];
+    for (const seg of lowerOverlapping) {
+      const prev = distinctTurns[distinctTurns.length - 1];
+      if (prev && checkMergeMatch(prev.text, seg.text).matched && seg.startMs - prev.endMs <= 1200) {
+        continue;
+      }
+      distinctTurns.push(seg);
+    }
+
+    const isExplicitOverlayWithSub =
+      cand.classification === 'OVERLAY' &&
+      lowerOverlapping.some((other) => other.classification === 'SUBTITLE');
+
+    if (distinctTurns.length >= 2 || isExplicitOverlayWithSub) {
+      bleedIndices.add(i);
+    }
+  }
+
+  const dialogueSegments: IntermediateSubtitleSegment[] = [];
+  const bleedSegments: IntermediateSubtitleSegment[] = [];
+  segments.forEach((seg, idx) => {
+    if (bleedIndices.has(idx)) {
+      bleedSegments.push(seg);
+    } else {
+      dialogueSegments.push(seg);
+    }
+  });
+
+  return { dialogueSegments, bleedSegments };
+}
+
+function mergeOverlayLinesPreserveOrder(aText: string, bText: string): string {
+  const linesA = aText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const linesB = bText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const combined = [...linesA];
+  for (const lb of linesB) {
+    const alreadyExists = combined.some((la) => checkMergeMatch(la, lb).matched);
+    if (!alreadyExists) {
+      combined.push(lb);
+    }
+  }
+  return combined.join('\n');
+}
+
+function collapseSimultaneousOverlaySegments(
+  segments: IntermediateSubtitleSegment[],
+  frameIntervalMs: number,
+): IntermediateSubtitleSegment[] {
+  if (segments.length <= 1) return [...segments];
+
+  const sorted = [...segments].sort((a, b) => {
+    if (a.startMs !== b.startMs) return a.startMs - b.startMs;
+    return (a.y0 ?? 0) - (b.y0 ?? 0);
+  });
+
+  const maxStartDiff = Math.max(1200, frameIntervalMs * 2.5);
+  const groups: IntermediateSubtitleSegment[] = [];
+
+  for (const seg of sorted) {
+    const matchGroup = groups.find((g) => {
+      const overlap = Math.min(g.endMs, seg.endMs) - Math.max(g.startMs, seg.startMs);
+      const minDur = Math.max(1, Math.min(g.endMs - g.startMs, seg.endMs - seg.startMs));
+      return (
+        overlap >= minDur * 0.65 &&
+        Math.abs(g.startMs - seg.startMs) <= maxStartDiff &&
+        Math.abs(g.endMs - seg.endMs) <= maxStartDiff
+      );
+    });
+
+    if (matchGroup) {
+      const topFirst = (seg.y0 ?? 0) < (matchGroup.y0 ?? 0);
+      matchGroup.text = topFirst
+        ? mergeOverlayLinesPreserveOrder(seg.text, matchGroup.text)
+        : mergeOverlayLinesPreserveOrder(matchGroup.text, seg.text);
+      matchGroup.startMs = Math.min(matchGroup.startMs, seg.startMs);
+      matchGroup.endMs = Math.max(matchGroup.endMs, seg.endMs);
+      matchGroup.confidence = Math.round((matchGroup.confidence + seg.confidence) / 2);
+      matchGroup.frames = Math.max(matchGroup.frames, seg.frames);
+      matchGroup.y0 = Math.min(matchGroup.y0 ?? 0, seg.y0 ?? 0);
+    } else {
+      groups.push({ ...seg });
+    }
+  }
+
+  return groups;
+}
+
+/**
+ * Chia mảng khung OCR theo nhãn `zone` ('top' vs 'bottom') nhưng giữ nguyên độ dài mảng
+ * để `timeMs = frameIdx * frameIntervalMs` luôn khớp chính xác từng frame video.
+ */
+export function splitFramesByZone(frames: OcrFrameResult[]): {
+  topFrames: OcrFrameResult[];
+  bottomFrames: OcrFrameResult[];
+} {
+  const toFrame = (lines: OcrFrameResult['lines']): OcrFrameResult => {
+    if (lines.length === 0) {
+      return { text: '', confidence: 0, lines: [] };
+    }
+    const text = lines.map((l) => l.text).join(' ').trim();
+    const confidence = lines.reduce((sum, l) => sum + l.confidence, 0) / lines.length;
+    return { text, confidence, lines };
+  };
+
+  const topFrames: OcrFrameResult[] = [];
+  const bottomFrames: OcrFrameResult[] = [];
+
+  for (const frame of frames) {
+    const lines = frame.lines || [];
+    const topLines = lines.filter((l) => l.zone === 'top');
+    const bottomLines = lines.filter((l) => l.zone !== 'top');
+    topFrames.push(toFrame(topLines));
+    bottomFrames.push(toFrame(bottomLines));
+  }
+
+  return { topFrames, bottomFrames };
+}
+
+function isOverlayBoardMatch(a: string, b: string): boolean {
+  if (checkMergeMatch(a, b).matched) return true;
+  const linesA = a.split(/\r?\n/).map(normalizeText).filter(Boolean);
+  const linesB = b.split(/\r?\n/).map(normalizeText).filter(Boolean);
+  if (linesA.length === 0 || linesB.length === 0) return false;
+
+  let matchedCount = 0;
+  for (const la of linesA) {
+    if (linesB.some((lb) => checkMergeMatch(la, lb).matched)) {
+      matchedCount += 1;
+    }
+  }
+  return matchedCount / Math.max(linesA.length, linesB.length) >= 0.5;
+}
+
+/**
+ * Tạo timeline độc lập cho File 2 (`_overlay.srt`) từ các khung vùng trên (bảng/thông tin).
+ * Các hàng đồng thời trong cùng 1 bảng được giữ nguyên trên nhiều dòng (`\n`),
+ * không bị chia cắt theo nhịp lời thoại bên dưới.
+ */
+export function buildOverlaySegmentsFromTopFrames(
+  frames: OcrFrameResult[],
+  frameIntervalMs: number,
+  extraBleedSegments: SrtLine[] = [],
+): SrtLine[] {
+  const mergeGapMs = Math.max(frameIntervalMs * 2.5, 1200);
+  const activeTracks: ActiveTrack[] = [];
+  const completedTracks: ActiveTrack[] = [];
+  let trackSeq = 0;
+
+  for (let frameIdx = 0; frameIdx < frames.length; frameIdx++) {
+    const f = frames[frameIdx];
+    const timeMs = Math.round(frameIdx * frameIntervalMs);
+
+    const rawLines = f.lines && f.lines.length > 0
+      ? f.lines
+      : (f.text && isUsableText(f.text, f.confidence) ? [{ text: f.text, confidence: f.confidence, y0: 0 }] : []);
+
+    const groupedRows = groupFrameLinesIntoRows(rawLines)
+      .filter((l) => isUsableText(l.text, l.confidence))
+      .sort((a, b) => a.y0 - b.y0);
+
+    for (let i = activeTracks.length - 1; i >= 0; i--) {
+      if (timeMs - activeTracks[i].lastSeenMs > mergeGapMs) {
+        completedTracks.push(activeTracks[i]);
+        activeTracks.splice(i, 1);
+      }
+    }
+
+    if (groupedRows.length === 0) continue;
+
+    const combinedText = groupedRows.map((r) => normalizeText(r.text)).filter(Boolean).join('\n');
+    if (!combinedText) continue;
+
+    const avgConf = Math.round(
+      groupedRows.reduce((s, r) => s + r.confidence, 0) / groupedRows.length,
+    );
+    const minY0 = Math.min(...groupedRows.map((r) => r.y0));
+    const maxBottom = Math.max(...groupedRows.map((r) => r.y0 + (r.h ?? 30)));
+    const det: TextDetection = {
+      text: combinedText,
+      confidence: avgConf,
+      timeMs,
+      y0: minY0,
+      x0: groupedRows[0].x0,
+      w: groupedRows[0].w,
+      h: maxBottom - minY0,
+      classification: 'OVERLAY',
+      zone: 'top',
+    };
+
+    const matchTrack = activeTracks.find((tr) => {
+      if (timeMs - tr.lastSeenMs > mergeGapMs) return false;
+      const lastDet = tr.detections[tr.detections.length - 1];
+      return isOverlayBoardMatch(lastDet.text, det.text);
+    });
+
+    if (matchTrack) {
+      matchTrack.lastSeenMs = timeMs;
+      matchTrack.detections.push(det);
+      matchTrack.y0 = det.y0;
+      matchTrack.h = det.h;
+    } else {
+      activeTracks.push({
+        id: ++trackSeq,
+        startMs: timeMs,
+        lastSeenMs: timeMs,
+        y0: det.y0,
+        x0: det.x0,
+        w: det.w,
+        h: det.h,
+        classification: 'OVERLAY',
+        zone: 'top',
+        detections: [det],
+      });
+    }
+  }
+
+  const allTracks = [...completedTracks, ...activeTracks];
+  const intermediate: IntermediateSubtitleSegment[] = [];
+
+  for (const tr of allTracks) {
+    if (tr.detections.length === 0) continue;
+    const { text, confidence } = selectStableText(tr.detections, true);
+    if (!text) continue;
+
+    const startMs = tr.detections[0].timeMs;
+    const endMs = Math.round(tr.detections[tr.detections.length - 1].timeMs + frameIntervalMs);
+    const framesCount = tr.detections.length;
+
+    intermediate.push({
+      startMs,
+      endMs,
+      text,
+      confidence,
+      frames: framesCount,
+      stable: framesCount >= 2 && confidence >= 65,
+      needsReview: confidence < 65 || framesCount === 1,
+      y0: tr.y0,
+      x0: tr.x0,
+      w: tr.w,
+      h: tr.h,
+      classification: 'OVERLAY',
+      zone: 'top',
+    });
+  }
+
+  for (const bleed of extraBleedSegments) {
+    const cleaned = normalizeMultilineText(bleed.text);
+    if (!cleaned) continue;
+    intermediate.push({
+      startMs: bleed.startMs,
+      endMs: bleed.endMs,
+      text: cleaned,
+      confidence: bleed.confidence ?? 75,
+      frames: bleed.frames ?? 2,
+      stable: bleed.stable ?? true,
+      needsReview: bleed.needsReview ?? false,
+      classification: 'OVERLAY',
+      zone: 'top',
+    });
+  }
+
+  if (intermediate.length === 0) return [];
+  const collapsed = collapseSimultaneousOverlaySegments(intermediate, frameIntervalMs);
+  return deduplicateSubtitleSegments(collapsed, frameIntervalMs, { preserveNewlines: true });
 }
 
 /**
@@ -459,11 +815,14 @@ export function deduplicateSubtitleSegments(
     w?: number;
     h?: number;
     classification?: 'SUBTITLE' | 'OVERLAY' | 'OTHER_TEXT';
+    zone?: 'top' | 'bottom';
   }>,
   frameIntervalMs: number = 500,
+  options?: { preserveNewlines?: boolean },
 ): SrtLine[] {
   if (segments.length === 0) return [];
 
+  const preserveNewlines = Boolean(options?.preserveNewlines);
   const maxGapMs = Math.max(1000, frameIntervalMs * 2);
 
   // Sắp xếp theo startMs, sau đó theo y0
@@ -485,11 +844,12 @@ export function deduplicateSubtitleSegments(
     w?: number;
     h?: number;
     classification?: 'SUBTITLE' | 'OVERLAY' | 'OTHER_TEXT';
+    zone?: 'top' | 'bottom';
   }> = [];
 
   for (let i = 0; i < sorted.length; i++) {
     const seg = sorted[i];
-    const text = normalizeText(seg.text);
+    const text = preserveNewlines ? normalizeMultilineText(seg.text) : normalizeText(seg.text);
     if (!text) continue;
 
     // Lọc rác OCR (ký tự đơn lẻ, dấu trôi nổi, nhiễu khung hình)
@@ -518,19 +878,21 @@ export function deduplicateSubtitleSegments(
 
       // Kiểm tra tính tương thích không gian
       const spatialCompat = isSpatiallyCompatible(
-        { y0: seg.y0 ?? -1, h: seg.h, classification: seg.classification },
-        { y0: prev.y0 ?? -1, h: prev.h, classification: prev.classification },
+        { y0: seg.y0 ?? -1, h: seg.h, classification: seg.classification, zone: seg.zone },
+        { y0: prev.y0 ?? -1, h: prev.h, classification: prev.classification, zone: prev.zone },
       );
       if (!spatialCompat) continue;
 
-      // Kiểm tra text khớp (Level 1, 2, 3)
+      // Kiểm tra text khớp (Level 1, 2, 3; nếu giữ nhiều dòng dùng thêm isOverlayBoardMatch)
       const match = checkMergeMatch(prev.text, text);
-      if (match.matched) {
+      const boardMatched = match.matched || (preserveNewlines && isOverlayBoardMatch(prev.text, text));
+      if (boardMatched) {
         // Gộp vào prev
         prev.endMs = Math.max(prev.endMs, seg.endMs);
-        if (match.bestText && match.bestText.length >= prev.text.length) {
-          prev.text = match.bestText;
-        }
+        const bestCandidate = match.bestText && match.bestText.length >= prev.text.length
+          ? match.bestText
+          : (text.length > prev.text.length ? text : prev.text);
+        prev.text = bestCandidate;
         prev.frames += fCount;
         prev.confidence = Math.round((prev.confidence + conf) / 2);
         prev.needsReview = prev.confidence < 65 || prev.frames === 1;
@@ -554,6 +916,7 @@ export function deduplicateSubtitleSegments(
         w: seg.w,
         h: seg.h,
         classification: seg.classification,
+        zone: seg.zone,
       });
     }
   }
@@ -567,8 +930,8 @@ export function deduplicateSubtitleSegments(
 
       // Chỉ cắt ngắn nếu cùng dải không gian (tránh cắt nhầm top overlay song song với bottom subtitle)
       const sameBand = isSpatiallyCompatible(
-        { y0: cur.y0 ?? -1, h: cur.h, classification: cur.classification },
-        { y0: next.y0 ?? -1, h: next.h, classification: next.classification },
+        { y0: cur.y0 ?? -1, h: cur.h, classification: cur.classification, zone: cur.zone },
+        { y0: next.y0 ?? -1, h: next.h, classification: next.classification, zone: next.zone },
       );
       if (sameBand && next.startMs > cur.startMs && cur.endMs > next.startMs) {
         cur.endMs = next.startMs;
@@ -604,16 +967,22 @@ export function deduplicateSubtitleSegments(
   });
 
   // Đảm bảo không chồng lấn timestamp giữa các dòng phụ đề kề nhau trong danh sách cuối cùng
+  // (Với overlay đa dòng, chỉ tỉa nhẹ phần chồng lấn nhỏ ở đuôi để không cắt mất bảng dài)
+  const smallTailOverlapMs = Math.max(1500, frameIntervalMs * 2);
   for (let i = 0; i < filteredResult.length - 1; i++) {
-    if (filteredResult[i].endMs > filteredResult[i + 1].startMs) {
-      filteredResult[i].endMs = filteredResult[i + 1].startMs;
+    const cur = filteredResult[i];
+    const next = filteredResult[i + 1];
+    if (cur.endMs > next.startMs && next.startMs > cur.startMs) {
+      if (!preserveNewlines || cur.endMs - next.startMs <= smallTailOverlapMs) {
+        cur.endMs = next.startMs;
+      }
     }
   }
 
   return filteredResult.map((s, index) => ({
     id: `line-${index}`,
     startMs: Math.max(0, s.startMs),
-    endMs: s.endMs,
+    endMs: Math.max(s.startMs + 100, s.endMs),
     text: s.text,
     confidence: s.confidence,
     frames: s.frames,
@@ -621,7 +990,7 @@ export function deduplicateSubtitleSegments(
     needsReview: s.needsReview,
     source: 'ocr' as const,
     displayStartMs: Math.max(0, s.startMs),
-    displayEndMs: s.endMs,
+    displayEndMs: Math.max(s.startMs + 100, s.endMs),
   }));
 }
 
@@ -796,4 +1165,14 @@ function normalizeText(raw: string): string {
     // (chỉ áp dụng cho CJK; tiếng Hàn giữ nguyên space giữa các từ như bản gốc)
     .replace(/([\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff])\s+(?=[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff])/g, '$1')
     .trim();
+}
+
+/** Chuẩn hoá từng dòng riêng lẻ và giữ nguyên dấu xuống dòng (`\n`) cho bảng/overlay nhiều hàng */
+function normalizeMultilineText(raw: string): string {
+  if (!raw) return '';
+  return raw
+    .split(/\r?\n/)
+    .map((line) => normalizeText(line))
+    .filter(Boolean)
+    .join('\n');
 }

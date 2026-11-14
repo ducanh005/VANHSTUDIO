@@ -13,12 +13,15 @@ import {
   Cpu,
   Users,
   Zap,
+  ChevronDown,
+  ChevronUp,
+  Sliders,
 } from 'lucide-react';
 import type { Task, TaskStatus } from '../types/task';
 import type { OcrStartOptions } from '../types/electron';
 import { parseSrt } from '../lib/srt';
-import ASRModelSelector from './ASRModelSelector';
-import OcrConfigModal from './OcrConfigModal';
+
+import OcrConfigModal, { type OcrModalStartPayload } from './OcrConfigModal';
 
 /**
  * Workspace dành riêng cho giai đoạn Phụ đề & ASR:
@@ -60,17 +63,21 @@ export default function ASRWorkspace({ tasks, selectedTaskId: propSelectedTaskId
     if (onSelectTaskId) onSelectTaskId(id);
     else setInternalTaskId(id);
   };
-  const [model, setModel] = useState('base');
+  const [model, setModel] = useState('large-v3-turbo');
   const [asrEngine, setAsrEngine] = useState<'faster-whisper' | 'whisper-cpp'>('faster-whisper');
   const [enableDiarization, setEnableDiarization] = useState(false);
   const [speakerCount, setSpeakerCount] = useState<number>(2);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [fwStatus, setFwStatus] = useState<{ available: boolean; useCuda: boolean; reason?: string } | null>(null);
   const [srtContent, setSrtContent] = useState<string | null>(null);
+  const [overlaySrtContent, setOverlaySrtContent] = useState<string | null>(null);
+  const [previewTrack, setPreviewTrack] = useState<'primary' | 'overlay'>('primary');
   const [starting, setStarting] = useState(false);
   const [loadingConfig, setLoadingConfig] = useState(false);
   const [message, setMessage] = useState('');
   const [isError, setIsError] = useState(false);
   const [isOcrModalOpen, setIsOcrModalOpen] = useState(false);
+  const [modalLaunchPurpose, setModalLaunchPurpose] = useState<'ocr' | 'hybrid'>('ocr');
 
   const selectedTask = tasks.find((t) => t.id === selectedTaskId) || null;
   const isTranscribing = selectedTask?.status === 'transcribing';
@@ -81,7 +88,8 @@ export default function ASRWorkspace({ tasks, selectedTaskId: propSelectedTaskId
   const isBusy = isTranscribing || isOcrRunning || isHybridRunning || starting || loadingConfig ||
     ['translating', 'dubbing', 'exporting'].includes(selectedTask?.status || '');
   const isAudio = selectedTask ? isAudioFile(selectedTask.filePath) : false;
-  const hasSrt = !!selectedTask?.srtPath;
+  const hasSrt = !!(selectedTask?.srtPath || selectedTask?.overlaySrtPath);
+  const hasOverlaySrt = !!selectedTask?.overlaySrtPath;
 
   // Thăm dò khả dụng Faster-Whisper & CUDA khi nạp component
   useEffect(() => {
@@ -107,7 +115,7 @@ export default function ASRWorkspace({ tasks, selectedTaskId: propSelectedTaskId
     let cancelled = false;
     setLoadingConfig(false);
     if (selectedTask) {
-      setModel(selectedTask.asrModel || 'base');
+      setModel(selectedTask.asrModel || 'large-v3-turbo');
       setAsrEngine(selectedTask.asrEngine || 'faster-whisper');
       setEnableDiarization(Boolean(selectedTask.enableDiarization));
       setSpeakerCount(selectedTask.speakerCount || 2);
@@ -116,7 +124,7 @@ export default function ASRWorkspace({ tasks, selectedTaskId: propSelectedTaskId
         Promise.all((['asrModel', 'asrEngine', 'enableDiarization'] as const).map((key) => window.vanhsub.settings.get(key)))
           .then(([defaultModel, defaultEngine, defaultDiarization]) => {
             if (cancelled) return;
-            setModel(selectedTask.asrModel || defaultModel || 'base');
+            setModel(selectedTask.asrModel || defaultModel || 'large-v3-turbo');
             setAsrEngine(selectedTask.asrEngine || defaultEngine || 'faster-whisper');
             setEnableDiarization(selectedTask.enableDiarization ?? Boolean(defaultDiarization));
           }).catch(() => {}).finally(() => { if (!cancelled) setLoadingConfig(false); });
@@ -126,29 +134,57 @@ export default function ASRWorkspace({ tasks, selectedTaskId: propSelectedTaskId
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedTask?.id]);
 
-  // Tải nội dung phụ đề khi đổi task / khi phiên âm xong (updatedAt đổi)
+  // Tải nội dung phụ đề (cả thoại chính và file overlay nếu có) khi đổi task / hoàn tất
   useEffect(() => {
     const srtPath = selectedTask?.srtPath;
-    if (!srtPath || typeof window === 'undefined' || !window.vanhsub?.tasks?.readSrt) {
+    const ovPath = selectedTask?.overlaySrtPath;
+    if (typeof window === 'undefined' || !window.vanhsub?.tasks?.readSrt) {
       setSrtContent(null);
+      setOverlaySrtContent(null);
       return;
     }
     let cancelled = false;
-    window.vanhsub.tasks
-      .readSrt(srtPath)
-      .then((content) => {
-        if (!cancelled) setSrtContent(content);
-      })
-      .catch(() => {
-        if (!cancelled) setSrtContent(null);
-      });
+    if (srtPath) {
+      window.vanhsub.tasks
+        .readSrt(srtPath)
+        .then((content) => {
+          if (!cancelled) setSrtContent(content);
+        })
+        .catch(() => {
+          if (!cancelled) setSrtContent(null);
+        });
+    } else {
+      setSrtContent(null);
+    }
+
+    if (ovPath) {
+      window.vanhsub.tasks
+        .readSrt(ovPath)
+        .then((content) => {
+          if (!cancelled) setOverlaySrtContent(content);
+        })
+        .catch(() => {
+          if (!cancelled) setOverlaySrtContent(null);
+        });
+    } else {
+      setOverlaySrtContent(null);
+      setPreviewTrack('primary');
+    }
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedTask?.srtPath, selectedTask?.status, selectedTask?.updatedAt]);
+  }, [selectedTask?.srtPath, selectedTask?.overlaySrtPath, selectedTask?.status, selectedTask?.updatedAt]);
 
   const lineCount = useMemo(() => (srtContent ? parseSrt(srtContent).length : 0), [srtContent]);
+  const overlayLineCount = useMemo(
+    () => (overlaySrtContent ? parseSrt(overlaySrtContent).length : 0),
+    [overlaySrtContent],
+  );
+  const displayedQuickPreview =
+    previewTrack === 'overlay' || (!selectedTask?.srtPath && overlaySrtContent)
+      ? overlaySrtContent
+      : srtContent;
 
   const handleModelChange = (m: string) => {
     setModel(m);
@@ -217,14 +253,45 @@ export default function ASRWorkspace({ tasks, selectedTaskId: propSelectedTaskId
     ) {
       return;
     }
+    setModalLaunchPurpose('ocr');
     setIsOcrModalOpen(true);
   };
 
-  // Thực thi OCR với cấu hình do người dùng lựa chọn từ modal
-  const handleExecuteOcr = async (options: OcrStartOptions) => {
+  // Thực thi OCR hoặc Hybrid với cấu hình từ modal dùng chung
+  const handleExecuteOcrModal = async (options: OcrModalStartPayload) => {
     if (!selectedTask) return;
     setMessage('');
     setIsError(false);
+    if (modalLaunchPurpose === 'hybrid') {
+      setStarting(true);
+      setMessage('Đang khởi chạy Kết hợp Whisper + OCR (Độ chính xác tuyệt đối)...');
+      try {
+        if (!window.vanhsub?.tasks?.startHybrid) {
+          throw new Error('Chức năng startHybrid chưa sẵn sàng trên hệ thống.');
+        }
+        await window.vanhsub.tasks.startHybrid(selectedTask.id, {
+          asrModel: model,
+          ocrMode: options.mode,
+          ocrFps: options.fps,
+          ocrLanguage: options.language,
+          ocrCustomRegion: options.customRegion,
+          ocrDualRegions: options.dualRegions,
+          dualEngine: options.dualEngine,
+          useGeminiAi: options.useGeminiAi,
+        });
+        const modeLabel = options.mode ? options.mode.toUpperCase() : 'AUTO';
+        setMessage(
+          `Đang chạy Kết hợp Whisper + OCR (${modeLabel}${options.useGeminiAi ? ' + Gemini AI' : ''})...`,
+        );
+      } catch (err: any) {
+        setIsError(true);
+        setMessage(err?.message || String(err));
+      } finally {
+        setStarting(false);
+      }
+      return;
+    }
+
     try {
       await window.vanhsub.ocr.start(selectedTask.id, options);
       const modeLabel = options.mode ? options.mode.toUpperCase() : 'AUTO';
@@ -258,30 +325,23 @@ export default function ASRWorkspace({ tasks, selectedTaskId: propSelectedTaskId
     }
   };
 
-  const handleStartHybrid = async () => {
+  const handleStartHybrid = () => {
     if (!selectedTask || isBusy) return;
     if (isAudio) {
       setIsError(true);
       setMessage('Chế độ Kết hợp Whisper + OCR chỉ hỗ trợ file video (cần hình ảnh để quét chữ).');
       return;
     }
-    setStarting(true);
-    setIsError(false);
-    setMessage('Đang khởi chạy Kết hợp Whisper + OCR (Độ chính xác tuyệt đối)...');
-    try {
-      if (!window.vanhsub?.tasks?.startHybrid) {
-        throw new Error('Chức năng startHybrid chưa sẵn sàng trên hệ thống.');
-      }
-      await window.vanhsub.tasks.startHybrid(selectedTask.id, {
-        asrModel: model,
-      });
-      setMessage('Đang chạy Kết hợp Whisper + OCR: Neo thời gian theo OCR và sửa lỗi câu chữ bằng Whisper.');
-    } catch (err: any) {
-      setIsError(true);
-      setMessage(err?.message || String(err));
-    } finally {
-      setStarting(false);
+    if (
+      hasSrt &&
+      !window.confirm(
+        'Tác vụ đã có phụ đề. Kết hợp Whisper + OCR sẽ tạo file .srt mới và trỏ tác vụ sang file đó. Tiếp tục?'
+      )
+    ) {
+      return;
     }
+    setModalLaunchPurpose('hybrid');
+    setIsOcrModalOpen(true);
   };
 
   const handleCancelHybrid = async () => {
@@ -562,114 +622,195 @@ export default function ASRWorkspace({ tasks, selectedTaskId: propSelectedTaskId
                 </div>
               )}
 
-              {/* Cấu hình Động cơ ASR & Phân tách người nói */}
-              <div className="rounded-lg border border-border bg-surface p-4 space-y-3">
+              {/* Cấu hình Nhận diện Giọng nói Hợp nhất (Unified ASR Control Bar) */}
+              <div className="rounded-lg border border-border bg-surface p-3.5 space-y-3">
+                {/* Header: Tiêu đề + Trạng thái GPU + Nút bật/tắt Nâng cao */}
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <Zap className="h-4 w-4 text-accent" />
-                    <span className="text-xs font-semibold text-text">Động cơ nhận diện giọng nói (ASR Engine)</span>
+                    <span className="text-xs font-semibold text-white">Cấu hình nhận diện giọng nói</span>
+                    <span className="text-[10px] text-text-muted hidden sm:inline">• Whisper ASR</span>
                   </div>
-                  {fwStatus && asrEngine === 'faster-whisper' && (
-                    <span
-                      className={`text-[10px] px-2 py-0.5 rounded-full border ${
-                        fwStatus.available
+
+                  <div className="flex items-center gap-2">
+                    {/* Badge trạng thái phần cứng */}
+                    {asrEngine === 'faster-whisper' ? (
+                      <span
+                        className={`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full border font-mono ${
+                          fwStatus?.available
+                            ? fwStatus.useCuda
+                              ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
+                              : 'border-blue-500/30 bg-blue-500/10 text-blue-400'
+                            : 'border-amber-500/30 bg-amber-500/10 text-amber-400'
+                        }`}
+                        title={fwStatus?.reason || 'Faster-Whisper Engine'}
+                      >
+                        {fwStatus?.useCuda ? <Zap className="h-2.5 w-2.5" /> : <Cpu className="h-2.5 w-2.5" />}
+                        {fwStatus?.available
                           ? fwStatus.useCuda
-                            ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
-                            : 'border-blue-500/30 bg-blue-500/10 text-blue-400'
-                          : 'border-amber-500/30 bg-amber-500/10 text-amber-400'
+                            ? 'CUDA GPU (RTX 3050)'
+                            : 'CPU int8'
+                          : 'Tự fallback whisper.cpp'}
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full border border-surface-3 bg-surface-2 text-text-muted font-mono">
+                        <Cpu className="h-2.5 w-2.5" />
+                        Native C++
+                      </span>
+                    )}
+
+                    {/* Nút bật/tắt mục nâng cao */}
+                    <button
+                      type="button"
+                      onClick={() => setShowAdvanced(!showAdvanced)}
+                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium transition cursor-pointer border ${
+                        showAdvanced
+                          ? 'border-accent/40 bg-accent-tint text-accent'
+                          : 'border-border bg-surface-2 text-text-muted hover:text-white'
                       }`}
-                      title={fwStatus.reason || ''}
+                      title="Tuỳ chỉnh sâu: Đổi Engine, xem thông số kỹ thuật"
                     >
-                      {fwStatus.available
-                        ? fwStatus.useCuda
-                          ? 'CUDA GPU'
-                          : 'CPU int8'
-                        : 'Sẽ tự động fallback về whisper.cpp'}
-                    </span>
-                  )}
+                      <Sliders className="h-3 w-3" />
+                      <span>Nâng cao</span>
+                      {showAdvanced ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+                    </button>
+                  </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => handleEngineChange('faster-whisper')}
-                    className={`flex flex-col text-left p-2.5 rounded-md border transition cursor-pointer ${
-                      asrEngine === 'faster-whisper'
-                        ? 'border-accent/40 bg-accent-tint text-white'
-                        : 'border-border bg-bg text-text-muted hover:border-border'
-                    }`}
-                  >
-                    <div className="flex items-center gap-1.5 font-medium text-xs">
-                      <Zap className="h-3.5 w-3.5 text-accent" />
-                      <span>Faster-Whisper</span>
-                      <span className="text-[10px] px-1.5 py-0.2 rounded bg-accent-tint text-accent font-mono">Nhanh 3-4x</span>
-                    </div>
-                    <p className="mt-1 text-[11px] text-text-muted">
-                      CTranslate2, timestamps theo từ, hỗ trợ phân tách người nói. Tự fallback nếu thiếu module.
-                    </p>
-                  </button>
+                {/* Dòng điều khiển chính: Chọn Model & Tách người nói (1 hàng duy nhất) */}
+                <div className="grid grid-cols-1 md:grid-cols-12 gap-2.5 items-center">
+                  <div className="md:col-span-7 flex items-center gap-2">
+                    <label className="text-[11px] text-text-muted shrink-0 font-medium">Model:</label>
+                    <select
+                      value={model}
+                      onChange={(e) => handleModelChange(e.target.value)}
+                      className="w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs font-medium text-white focus:outline-none focus:border-accent/40 cursor-pointer"
+                    >
+                      <option value="large-v3-turbo">⭐ Large Turbo (Chuẩn nhất & Khuyên dùng — 1.6 GB)</option>
+                      <option value="medium">Medium (Tiếng Việt phong phú — 1.5 GB)</option>
+                      <option value="small">Small (Chất lượng khá — 461 MB)</option>
+                      <option value="base">Base (Cân bằng & Nhẹ — 140 MB)</option>
+                      <option value="tiny">Tiny (Siêu nhanh / Máy yếu — 39 MB)</option>
+                    </select>
+                  </div>
 
-                  <button
-                    type="button"
-                    onClick={() => handleEngineChange('whisper-cpp')}
-                    className={`flex flex-col text-left p-2.5 rounded-md border transition cursor-pointer ${
-                      asrEngine === 'whisper-cpp'
-                        ? 'border-accent/40 bg-accent-tint text-white'
-                        : 'border-border bg-bg text-text-muted hover:border-border'
-                    }`}
-                  >
-                    <div className="flex items-center gap-1.5 font-medium text-xs">
-                      <Cpu className="h-3.5 w-3.5 text-accent" />
-                      <span>Whisper.cpp</span>
-                      <span className="text-[10px] px-1.5 py-0.2 rounded bg-surface-2 text-text-muted font-mono">Native C++</span>
-                    </div>
-                    <p className="mt-1 text-[11px] text-text-muted">
-                      Chạy trực tiếp binary C++, không phụ thuộc môi trường Python. Ổn định và độc lập.
-                    </p>
-                  </button>
-                </div>
-
-                {/* Speaker Diarization Controls */}
-                <div className="pt-2 border-t border-border flex flex-wrap items-center justify-between gap-3">
-                  <label className="flex items-center gap-2 cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={enableDiarization}
-                      onChange={(e) => handleDiarizationToggle(e.target.checked)}
-                      className="h-4 w-4 rounded border-border bg-surface-2 text-accent focus:ring-accent/30"
-                    />
-                    <div className="flex items-center gap-1.5 text-xs text-text">
-                      <Users className="h-3.5 w-3.5 text-accent" />
-                      <span>Phân tách người nói (Speaker Diarization)</span>
-                    </div>
-                  </label>
-
-                  {enableDiarization && (
-                    <div className="flex items-center gap-2 text-xs text-text">
-                      <span className="text-[11px] text-text-muted">Số người nói dự kiến:</span>
+                  <div className="md:col-span-5 flex items-center justify-between md:justify-end gap-2 bg-surface-2/60 rounded-md border border-border/60 px-2.5 py-1">
+                    <label className="flex items-center gap-1.5 cursor-pointer select-none">
                       <input
-                        type="number"
-                        min={1}
-                        max={10}
-                        value={speakerCount}
-                        onChange={(e) => handleSpeakerCountChange(Math.max(1, parseInt(e.target.value) || 2))}
-                        className="w-14 rounded-lg border border-border bg-bg px-2 py-1 text-center font-mono text-xs text-white focus:border-accent/40 focus:outline-none"
+                        type="checkbox"
+                        checked={enableDiarization}
+                        onChange={(e) => handleDiarizationToggle(e.target.checked)}
+                        className="h-3.5 w-3.5 rounded border-border bg-surface-2 text-accent focus:ring-accent/30"
                       />
-                    </div>
-                  )}
-                </div>
-              </div>
+                      <div className="flex items-center gap-1 text-[11px] text-text">
+                        <Users className="h-3 w-3 text-accent" />
+                        <span>Tách người nói</span>
+                      </div>
+                    </label>
 
-              {/* Chọn model */}
-              <ASRModelSelector currentModel={model} onModelChange={handleModelChange} />
+                    {enableDiarization && (
+                      <div className="flex items-center gap-1.5 pl-2 border-l border-border/80">
+                        <span className="text-[10px] text-text-muted">Số người:</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={10}
+                          value={speakerCount}
+                          onChange={(e) => handleSpeakerCountChange(Math.max(1, parseInt(e.target.value) || 2))}
+                          className="w-10 rounded border border-border bg-bg px-1 py-0.5 text-center font-mono text-[11px] text-white focus:border-accent/40 focus:outline-none"
+                        />
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Panel Nâng cao: Thu gọn mặc định, mở ra khi người dùng cần tuỳ biến Engine */}
+                {showAdvanced && (
+                  <div className="pt-2.5 border-t border-border/60 space-y-2 text-xs">
+                    <div className="text-[11px] font-medium text-text-muted">Động cơ nhận diện (ASR Engine):</div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleEngineChange('faster-whisper')}
+                        className={`flex flex-col text-left p-2 rounded-md border transition cursor-pointer ${
+                          asrEngine === 'faster-whisper'
+                            ? 'border-accent/40 bg-accent-tint text-white'
+                            : 'border-border bg-bg text-text-muted hover:border-border'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-medium text-xs text-accent">Faster-Whisper (Mặc định)</span>
+                          <span className="text-[9px] px-1 py-0.2 rounded bg-accent-tint text-accent font-mono">Nhanh 3-4x</span>
+                        </div>
+                        <p className="mt-0.5 text-[10px] text-text-muted leading-tight">
+                          CTranslate2, GPU CUDA, timestamps theo từ, tách người nói. Tự động fallback nếu lỗi.
+                        </p>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleEngineChange('whisper-cpp')}
+                        className={`flex flex-col text-left p-2 rounded-md border transition cursor-pointer ${
+                          asrEngine === 'whisper-cpp'
+                            ? 'border-accent/40 bg-accent-tint text-white'
+                            : 'border-border bg-bg text-text-muted hover:border-border'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-medium text-xs text-white">Whisper.cpp</span>
+                          <span className="text-[9px] px-1 py-0.2 rounded bg-surface-2 text-text-muted font-mono">Native C++</span>
+                        </div>
+                        <p className="mt-0.5 text-[10px] text-text-muted leading-tight">
+                          Chạy binary C++ độc lập không cần Python. Độ ổn định cao, dự phòng khi Python lỗi.
+                        </p>
+                      </button>
+                    </div>
+
+                    <div className="flex items-center justify-between text-[10px] text-text-muted pt-0.5">
+                      <span>💡 Gợi ý: Giữ Faster-Whisper + Large Turbo để đạt chất lượng phiên âm cao nhất.</span>
+                    </div>
+                  </div>
+                )}
+              </div>
 
               {/* Xem nhanh phụ đề */}
               <div className="flex min-h-[200px] flex-1 flex-col overflow-hidden rounded-lg border border-border bg-surface">
-                <div className="flex items-center justify-between border-b border-border px-4 py-2.5 text-xs font-semibold text-text">
-                  <span>
-                    Phụ đề{' '}
-                    {hasSrt && <span className="font-mono text-[11px] text-text-muted">({lineCount} dòng)</span>}
-                  </span>
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-2.5 text-xs font-semibold text-text">
+                  <div className="flex items-center gap-2">
+                    <span>
+                      Phụ đề{' '}
+                      {selectedTask?.srtPath && (
+                        <span className="font-mono text-[11px] text-text-muted">({lineCount} dòng thoại)</span>
+                      )}
+                      {hasOverlaySrt && (
+                        <span className="ml-1.5 font-mono text-[11px] text-amber-300">
+                          + {overlayLineCount} dòng bảng/thông tin
+                        </span>
+                      )}
+                    </span>
+                    {hasOverlaySrt && (
+                      <div className="ml-2 flex overflow-hidden rounded border border-border bg-bg">
+                        <button
+                          type="button"
+                          onClick={() => setPreviewTrack('primary')}
+                          className={`px-2 py-0.5 text-[10px] font-medium cursor-pointer ${
+                            previewTrack === 'primary' ? 'bg-accent-tint text-accent font-semibold' : 'text-text-muted hover:text-white'
+                          }`}
+                        >
+                          Thoại chính
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setPreviewTrack('overlay')}
+                          className={`border-l border-border px-2 py-0.5 text-[10px] font-medium cursor-pointer ${
+                            previewTrack === 'overlay' ? 'bg-amber-500/20 text-amber-300 font-semibold' : 'text-text-muted hover:text-white'
+                          }`}
+                        >
+                          Bảng/Overlay
+                        </button>
+                      </div>
+                    )}
+                  </div>
                   {selectedTask?.speakers && selectedTask.speakers.length > 0 && (
                     <div className="flex items-center gap-1.5 text-[11px] font-normal text-accent">
                       <Users className="h-3.5 w-3.5" />
@@ -700,10 +841,10 @@ export default function ASRWorkspace({ tasks, selectedTaskId: propSelectedTaskId
                             ? 'Đang phiên âm Whisper — kết quả sẽ hiện ở đây khi xong...'
                             : 'Tác vụ chưa có phụ đề — bấm "Bắt đầu phiên âm", "Quét OCR", "Kết hợp Whisper + OCR" hoặc "Nhập SRT".'}
                     </p>
-                  ) : srtContent === null ? (
+                  ) : displayedQuickPreview === null ? (
                     <p className="py-8 text-center text-text-muted">Đang tải phụ đề...</p>
                   ) : (
-                    <pre className="whitespace-pre-wrap text-text">{srtContent}</pre>
+                    <pre className="whitespace-pre-wrap text-text">{displayedQuickPreview}</pre>
                   )}
                 </div>
               </div>
@@ -712,12 +853,13 @@ export default function ASRWorkspace({ tasks, selectedTaskId: propSelectedTaskId
         </div>
       </div>
 
-      {/* Modal Cấu hình OCR đa chế độ */}
+      {/* Modal Cấu hình OCR / Hybrid đa chế độ */}
       <OcrConfigModal
         isOpen={isOcrModalOpen}
         onClose={() => setIsOcrModalOpen(false)}
         task={selectedTask}
-        onStartOcr={handleExecuteOcr}
+        launchPurpose={modalLaunchPurpose}
+        onStartOcr={handleExecuteOcrModal}
       />
     </div>
   );

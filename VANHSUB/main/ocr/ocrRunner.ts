@@ -3,7 +3,11 @@ import fs from 'fs';
 import { app } from 'electron';
 
 import { TaskStore, type Task } from '../store/taskStore';
-import { SettingsStore } from '../store/settingsStore';
+import {
+  DEFAULT_OCR_DUAL_REGIONS,
+  SettingsStore,
+  type OcrDualRegions,
+} from '../store/settingsStore';
 import { CancelledError, isCancelledError } from '../lib/cancel';
 import { nextAvailablePath } from '../lib/paths';
 import { TranslateRunner } from '../translate/translateRunner';
@@ -15,11 +19,14 @@ import {
   type OcrCustomRegion,
 } from './frameExtractor';
 import {
+  buildOverlaySegmentsFromTopFrames,
   buildSubtitleSegments,
   buildSubtitleSegmentsWithStats,
   filterPersistentTopLines,
   segmentsToSrt,
+  splitFramesByZone,
 } from './subtitleBuilder';
+import type { SrtLine } from '../lib/srt';
 import { normalizeSrtLines } from '../lib/srtNormalizer';
 import { validateSubtitleTimeline } from '../lib/timelineDiagnostics';
 import {
@@ -43,6 +50,7 @@ const VIDEO_EXTENSIONS = new Set(['.mp4', '.mkv', '.avi', '.mov', '.flv', '.wmv'
 export interface OcrRunOptions {
   mode?: OcrMode;
   customRegion?: OcrCustomRegion | null;
+  dualRegions?: OcrDualRegions | null;
   language?: string;
   fps?: number;
   dualEngine?: boolean;
@@ -167,6 +175,10 @@ export class OcrRunner {
       const fps = clampNumber(Number(options?.fps ?? SettingsStore.get('ocrFps')) || 2, 0.5, 5);
       const mode = (options?.mode || SettingsStore.get('ocrMode') || 'auto') as OcrMode;
       const customRegion = options?.customRegion ?? SettingsStore.get('ocrCustomRegion') ?? null;
+      const dualRegions =
+        mode === 'dual'
+          ? (options?.dualRegions ?? SettingsStore.get('ocrDualRegions') ?? DEFAULT_OCR_DUAL_REGIONS)
+          : null;
       const dualEngine = options?.dualEngine ?? (SettingsStore.get('ocrDualEngine') !== false);
       const shouldStop = () => this.cancelRequested.has(taskId);
 
@@ -232,6 +244,7 @@ export class OcrRunner {
           regionOffsetRatio: offsetRatio,
           ocrMode: mode,
           customRegion: customRegion ?? null,
+          dualRegions,
         },
         {
           onReady: () => {
@@ -353,12 +366,36 @@ export class OcrRunner {
       onUpdate?.();
 
       // Bỏ lớp phủ tĩnh ở 1/4 trên khung (watermark/logo in cố định suốt video)
-      // nếu không phải chế độ full (chế độ full giữ toàn bộ text trên màn hình)
-      const cleanedResults =
-        mode === 'full'
-          ? frameResults
-          : filterPersistentTopLines(frameResults, frameIntervalMs, videoHeight);
-      const { segments: rawSegments, stats } = buildSubtitleSegmentsWithStats(cleanedResults, frameIntervalMs);
+      // nếu không phải chế độ full/vùng trên (chế độ full & top-zone giữ bảng/chú thích trên)
+      let rawSegments: SrtLine[];
+      let bleedOverlaySegments: SrtLine[] = [];
+      let topOverlaySegments: SrtLine[] = [];
+      let stats;
+
+      if (mode === 'dual') {
+        const { topFrames, bottomFrames } = splitFramesByZone(frameResults);
+        const cleanedBottom = filterPersistentTopLines(bottomFrames, frameIntervalMs, videoHeight);
+        const built = buildSubtitleSegmentsWithStats(cleanedBottom, frameIntervalMs, {
+          splitStaticBleed: true,
+        });
+        rawSegments = built.segments;
+        stats = built.stats;
+        bleedOverlaySegments = built.overlaySegments || [];
+        topOverlaySegments = buildOverlaySegmentsFromTopFrames(
+          topFrames,
+          frameIntervalMs,
+          bleedOverlaySegments,
+        );
+      } else {
+        const cleanedResults =
+          mode === 'full'
+            ? frameResults
+            : filterPersistentTopLines(frameResults, frameIntervalMs, videoHeight);
+        const built = buildSubtitleSegmentsWithStats(cleanedResults, frameIntervalMs);
+        rawSegments = built.segments;
+        stats = built.stats;
+      }
+
       const { lines: segments } = normalizeSrtLines(rawSegments, {
         maxGapMs: Math.max(1200, frameIntervalMs * 2),
         preserveEvidenceTiming: true,
@@ -366,15 +403,16 @@ export class OcrRunner {
 
       // In báo cáo debug chi tiết theo Rule 18
       console.log(
-        `[OCR Pipeline Report] OCR frames scanned: ${stats.framesScanned} | Text detections: ${stats.textDetections} | Tracked subtitle groups: ${stats.trackedGroups} | Duplicates merged: ${stats.duplicatesMerged} | Final subtitle events: ${stats.finalEvents} | High confidence: ${stats.highConfidence} | Needs review: ${stats.needsReview} | AI corrected: 0`,
+        `[OCR Pipeline Report] OCR frames scanned: ${stats.framesScanned} | Text detections: ${stats.textDetections} | Tracked subtitle groups: ${stats.trackedGroups} | Duplicates merged: ${stats.duplicatesMerged} | Final subtitle events: ${stats.finalEvents} | Overlay events: ${topOverlaySegments.length} | High confidence: ${stats.highConfidence} | Needs review: ${stats.needsReview} | AI corrected: 0`,
       );
 
       const srtContent = segmentsToSrt(segments);
-      const timelineIssues = validateSubtitleTimeline(segments);
+      const overlaySrtContent = topOverlaySegments.length > 0 ? segmentsToSrt(topOverlaySegments) : null;
+      const timelineIssues = segments.length > 0 ? validateSubtitleTimeline(segments) : [];
       if (timelineIssues.some((issue) => issue.severity === 'error')) {
         throw new Error(`OCR timeline contains invalid timestamps: ${JSON.stringify(timelineIssues.filter((issue) => issue.severity === 'error'))}`);
       }
-      if (!srtContent) {
+      if (!srtContent && !(options?.isSubTask && overlaySrtContent) && !(mode === 'dual' && overlaySrtContent)) {
         throw new Error(
           'Không nhận diện được phụ đề nào — kiểm tra ngôn ngữ quét trong Cài đặt hoặc thử vùng quét "Toàn khung".',
         );
@@ -385,34 +423,56 @@ export class OcrRunner {
       // Giai đoạn 6: ghi file .srt cạnh video (không ghi đè file có sẵn)
       const videoDir = path.dirname(task.filePath);
       const base = path.basename(task.filePath, path.extname(task.filePath));
-      const targetPath = nextAvailablePath(path.join(videoDir, `${base}_ocr.srt`));
-      fs.writeFileSync(targetPath, srtContent, 'utf-8');
-      fs.writeFileSync(targetPath.replace(/\.srt$/i, '.timeline.json'),
-        JSON.stringify({ segments, issues: timelineIssues, frameIntervalMs }, null, 2), 'utf-8');
-      console.log(`[OCR] Đã ghi ${segments.length} dòng phụ đề vào ${targetPath}`);
+      let targetPath: string | undefined;
+      if (srtContent) {
+        targetPath = nextAvailablePath(path.join(videoDir, `${base}_ocr.srt`));
+        fs.writeFileSync(targetPath, srtContent, 'utf-8');
+        fs.writeFileSync(
+          targetPath.replace(/\.srt$/i, '.timeline.json'),
+          JSON.stringify({ segments, issues: timelineIssues, frameIntervalMs }, null, 2),
+          'utf-8',
+        );
+        console.log(`[OCR] Đã ghi ${segments.length} dòng phụ đề vào ${targetPath}`);
+      }
 
-      writeDiagnosticDump(
-        targetPath.replace(/\.srt$/i, '.frames.txt'),
-        task.fileName,
-        merged,
-        frameIntervalMs,
-      );
+      let overlayTargetPath: string | undefined;
+      if (overlaySrtContent) {
+        overlayTargetPath = nextAvailablePath(path.join(videoDir, `${base}_ocr_overlay.srt`));
+        fs.writeFileSync(overlayTargetPath, overlaySrtContent, 'utf-8');
+        console.log(`[OCR] Đã ghi ${topOverlaySegments.length} dòng bảng/thông tin vào ${overlayTargetPath}`);
+      }
+
+      const diagBasePath = targetPath || overlayTargetPath;
+      if (diagBasePath) {
+        writeDiagnosticDump(
+          diagBasePath.replace(/\.srt$/i, '.frames.txt'),
+          task.fileName,
+          merged,
+          frameIntervalMs,
+        );
+      }
 
       // Commit a new subtitle only after all outputs were written. Failed/cancelled
       // reruns retain the last completed artifacts and never delete old TTS files.
       const artifactUpdates = {
-        translatedSrtPath: undefined, ttsAudioDir: undefined,
+        translatedSrtPath: undefined,
+        translatedOverlaySrtPath: undefined,
+        overlaySrtPath: overlayTargetPath,
+        ttsAudioDir: undefined,
         ttsMergedAudioPath: undefined, ttsOverruns: undefined, outputPath: undefined,
         ttsVoiceOverrides: {}, subtitleRevision: (task.subtitleRevision || 0) + 1,
         ttsNeedsRegeneration: !!task.ttsAudioDir,
       };
       if (!options?.isSubTask) {
+        const doneStageDesc = topOverlaySegments.length > 0
+          ? `Đã quét OCR: ${segments.length} dòng thoại + ${topOverlaySegments.length} dòng bảng/thông tin`
+          : `Đã quét OCR được ${segments.length} dòng phụ đề`;
         const updated = TaskStore.update(taskId, {
           ...artifactUpdates,
           status: 'done',
           progress: 100,
           srtPath: targetPath,
-          stageDescription: `Đã quét OCR được ${segments.length} dòng phụ đề`,
+          stageDescription: doneStageDesc,
           ocrStats: {
             framesScanned: stats.framesScanned,
             detections: stats.textDetections,
@@ -427,7 +487,7 @@ export class OcrRunner {
 
         // Nhất quán với phiên âm: tự động dịch nếu người dùng bật tùy chọn này
         if (SettingsStore.get('autoTranslateAfterAsr') && SettingsStore.hasGeminiKey()) {
-          await TranslateRunner.runTranslate(taskId, undefined, onUpdate);
+          await TranslateRunner.runTranslate(taskId, undefined, onUpdate, { targetTrack: 'both' });
         }
 
         return updated ?? TaskStore.getById(taskId);

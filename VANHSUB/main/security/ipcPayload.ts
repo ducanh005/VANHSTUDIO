@@ -60,7 +60,7 @@ export function validateIpcPayload(channel: string, args: unknown[]): void {
   }
   if (channel === 'tasks:create' || channel === 'tasks:update') {
     const task = args[channel === 'tasks:create' ? 0 : 1] as Record<string, unknown>;
-    for (const key of ['filePath', 'originalFilePath', 'projectDir', 'srtPath', 'translatedSrtPath', 'audioPath', 'outputPath', 'dubbedVideoPath', 'ttsAudioDir', 'ttsMergedAudioPath']) {
+    for (const key of ['filePath', 'originalFilePath', 'projectDir', 'srtPath', 'translatedSrtPath', 'overlaySrtPath', 'translatedOverlaySrtPath', 'audioPath', 'outputPath', 'dubbedVideoPath', 'ttsAudioDir', 'ttsMergedAudioPath']) {
       if (task[key] !== undefined && task[key] !== '') filePath(task[key]);
     }
     if (task.status !== undefined && !['queued', 'transcribing', 'ocr', 'translating', 'exporting', 'dubbing', 'done', 'error', 'cancelled'].includes(String(task.status))) invalid();
@@ -81,6 +81,10 @@ export function validateIpcPayload(channel: string, args: unknown[]): void {
         if (format.resolution !== undefined && !['original', '1080p', '720p', '480p'].includes(format.resolution)) invalid();
       }
     }
+  }
+  if (channel === 'translate:start' && args[2] != null) {
+    record(args[2]);
+    if (args[2].targetTrack !== undefined && !['primary', 'overlay', 'both'].includes(String(args[2].targetTrack))) invalid();
   }
   if (channel === 'tts:start' && args[2] !== undefined && (typeof args[2] !== 'number' || args[2] < 0.1 || args[2] > 5)) invalid();
   if (channel === 'aiStudio:pipeline:startManualMedia') {

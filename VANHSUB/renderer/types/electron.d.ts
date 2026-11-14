@@ -37,7 +37,9 @@ export type SettingKey =
   | 'ocrRegion'
   | 'ocrMode'
   | 'ocrCustomRegion'
+  | 'ocrDualRegions'
   | 'ocrDualEngine'
+  | 'hybridUseGeminiAi'
   | 'glossary'
   | 'translationStyleGuide'
   | 'onboardingCompleted'
@@ -49,7 +51,7 @@ export type SettingKey =
   | 'veoLastChecked'
   | 'veoCooldownSeconds';
 
-export type OcrMode = 'auto' | 'bottom' | 'full' | 'custom';
+export type OcrMode = 'auto' | 'bottom' | 'full' | 'custom' | 'dual';
 
 export interface OcrCustomRegion {
   x: number;
@@ -58,12 +60,29 @@ export interface OcrCustomRegion {
   h: number;
 }
 
+export interface OcrDualRegions {
+  top: OcrCustomRegion;
+  bottom: OcrCustomRegion;
+}
+
 export interface OcrStartOptions {
   mode?: OcrMode;
   customRegion?: OcrCustomRegion | null;
+  dualRegions?: OcrDualRegions | null;
   language?: string;
   fps?: number;
   dualEngine?: boolean;
+}
+
+export interface HybridStartOptions {
+  asrModel?: string;
+  ocrMode?: OcrMode;
+  ocrFps?: number;
+  ocrLanguage?: string;
+  ocrCustomRegion?: OcrCustomRegion | null;
+  ocrDualRegions?: OcrDualRegions | null;
+  dualEngine?: boolean;
+  useGeminiAi?: boolean;
 }
 
 /** Giọng đọc clone từ file audio mẫu (đồng bộ với VoiceSample trong main/store) */
@@ -164,6 +183,7 @@ export interface ExportFormatOptions {
 export interface DualSubtitleOption {
   enabled: boolean;
   layoutPreset?: 'douyin_music_left' | 'top_bottom_bilingual' | 'custom';
+  secondarySource?: 'auto' | 'original_dialogue' | 'overlay';
   secondaryStyle?: Partial<SubStyle>;
 }
 
@@ -199,7 +219,7 @@ export interface VanhsubAPI {
     delete: (id: string) => Promise<boolean>;
     start: (id: string) => Promise<boolean>;
     cancel: (id: string) => Promise<boolean>;
-    startHybrid: (id: string, options?: any) => Promise<boolean>;
+    startHybrid: (id: string, options?: HybridStartOptions) => Promise<boolean>;
     cancelHybrid: (id: string) => Promise<boolean>;
     readSrt: (srtPath: string) => Promise<string>;
     writeSrt: (srtPath: string, content: string) => Promise<boolean>;
@@ -220,7 +240,11 @@ export interface VanhsubAPI {
     cleanSubtitles: (items: Array<{ startMs: number; endMs: number; text: string }>) => Promise<Array<{ startMs: number; endMs: number; text: string }>>;
   };
   translate: {
-    start: (id: string, targetLanguage?: string) => Promise<boolean>;
+    start: (
+      id: string,
+      targetLanguage?: string,
+      options?: { targetTrack?: 'primary' | 'overlay' | 'both' }
+    ) => Promise<boolean>;
     cancel: (id: string) => Promise<boolean>;
   };
   tts: {

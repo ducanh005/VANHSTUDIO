@@ -980,7 +980,7 @@ export const VideoPreviewCanvas: React.FC<VideoPreviewCanvasProps> = ({
                   letterSpacing: '3px',
                   textShadow: '2px 0 0 #000, 0 2px 0 #000, -2px 0 0 #000, 0 -2px 0 #000',
                 }}
-                className="text-center break-words max-w-full"
+                className="text-center break-words whitespace-pre-line max-w-full"
               >
                 {activeSecLine.text}
               </span>

@@ -133,7 +133,7 @@ export default function SettingsPage() {
   const [showCustomModelInput, setShowCustomModelInput] = useState(false);
   const [geminiSavedFlash, setGeminiSavedFlash] = useState(false);
   const [targetLanguage, setTargetLanguage] = useState('vi');
-  const [asrModel, setAsrModel] = useState('base');
+  const [asrModel, setAsrModel] = useState('large-v3-turbo');
   const [exportDir, setExportDir] = useState('');
   const [translateBatchSize, setTranslateBatchSize] = useState(15);
   const [translateConcurrency, setTranslateConcurrency] = useState(1);
@@ -145,6 +145,7 @@ export default function SettingsPage() {
   const [ocrFps, setOcrFps] = useState(2);
   const [ocrMode, setOcrMode] = useState<OcrMode>('auto');
   const [ocrDualEngine, setOcrDualEngine] = useState(true);
+  const [hybridUseGeminiAi, setHybridUseGeminiAi] = useState(true);
   const [glossary, setGlossary] = useState('');
   const [translationStyleGuide, setTranslationStyleGuide] = useState('');
 
@@ -240,8 +241,9 @@ export default function SettingsPage() {
       window.vanhsub.settings.get('glossary'),
       window.vanhsub.settings.get('translationStyleGuide'),
       window.vanhsub.settings.get('ttsAllowShortening'),
+      window.vanhsub.settings.get('hybridUseGeminiAi'),
     ])
-      .then(([key, gModel, lang, aModel, expDir, batchSize, concurrency, autoTrans, voice, spd, oLang, oFps, oMode, oDual, glossaryVal, styleVal, allowShortening]) => {
+      .then(([key, gModel, lang, aModel, expDir, batchSize, concurrency, autoTrans, voice, spd, oLang, oFps, oMode, oDual, glossaryVal, styleVal, allowShortening, hybridAi]) => {
         setTtsAllowShortening(Boolean(allowShortening));
         if (key) setApiKey(key);
         if (gModel) {
@@ -260,10 +262,11 @@ export default function SettingsPage() {
         if (spd) setTtsSpeed(Number(spd) || 1.0);
         if (oLang) setOcrLanguage(String(oLang));
         if (oFps) setOcrFps(Number(oFps) || 2);
-        if (oMode && ['auto', 'bottom', 'full', 'custom'].includes(String(oMode))) {
+        if (oMode && ['auto', 'bottom', 'full', 'custom', 'dual'].includes(String(oMode))) {
           setOcrMode(oMode as OcrMode);
         }
         if (oDual !== undefined) setOcrDualEngine(oDual !== false);
+        if (hybridAi !== undefined) setHybridUseGeminiAi(hybridAi !== false);
         if (glossaryVal !== undefined) setGlossary(String(glossaryVal || ''));
         if (styleVal !== undefined) setTranslationStyleGuide(String(styleVal || ''));
       })
@@ -283,6 +286,7 @@ export default function SettingsPage() {
       ttsVoice: setTtsVoice, ttsSpeed: setTtsSpeed, ocrLanguage: setOcrLanguage,
       ttsAllowShortening: setTtsAllowShortening,
       ocrFps: setOcrFps, ocrMode: setOcrMode, ocrDualEngine: setOcrDualEngine,
+      hybridUseGeminiAi: setHybridUseGeminiAi,
       glossary: setGlossary, translationStyleGuide: setTranslationStyleGuide,
     };
     const unsubscribe = window.vanhsub.settings.onChange((key) => {
@@ -523,7 +527,10 @@ export default function SettingsPage() {
       {/* ASR Model Selector */}
       <ASRModelSelector 
         currentModel={asrModel}
-        onModelChange={setAsrModel}
+        onModelChange={(m) => {
+          setAsrModel(m);
+          void autoSaveSetting('asrModel', m);
+        }}
       />
 
       <div className="grid gap-6 lg:grid-cols-2">
@@ -1317,9 +1324,16 @@ export default function SettingsPage() {
                   {
                     id: 'custom',
                     title: 'Custom',
-                    desc: 'Người dùng kéo vùng cần OCR (chọn khi bấm Quét OCR ở tab Phụ đề & ASR)',
+                    desc: 'Người dùng kéo 1 vùng cần OCR (chọn khi bấm Quét OCR ở tab Phụ đề & ASR)',
                     badge: 'Kéo vùng',
                     badgeColor: 'border-accent/40 bg-accent-tint text-accent',
+                  },
+                  {
+                    id: 'dual',
+                    title: '2 Vùng (Trên & Dưới)',
+                    desc: 'Vùng trên quét bảng/thông tin -> xuất file .overlay.srt; vùng dưới quét lời thoại (kéo 2 vùng khi bấm Quét OCR / Whisper + OCR)',
+                    badge: 'Tách 2 file',
+                    badgeColor: 'border-amber-500/40 bg-amber-500/15 text-amber-300',
                   },
                 ].map((item) => {
                   const isSelected = ocrMode === item.id;
@@ -1376,6 +1390,26 @@ export default function SettingsPage() {
                 <span className="mt-0.5 block text-[10px] text-text-muted">
                   Mỗi dòng chữ được 2 engine đọc riêng rồi so sánh — chính xác hơn rõ rệt với
                   phụ đề mờ/nền bận, đổi lại quét chậm hơn khoảng 30-40%.
+                </span>
+              </span>
+            </label>
+
+            <label className="flex cursor-pointer items-start gap-3 rounded-md border border-indigo-500/30 bg-indigo-950/20 p-3">
+              <input
+                type="checkbox"
+                checked={hybridUseGeminiAi}
+                onChange={(e) => {
+                  setHybridUseGeminiAi(e.target.checked);
+                  void autoSaveSetting('hybridUseGeminiAi', e.target.checked);
+                }}
+                className="mt-0.5 h-4 w-4 shrink-0 accent-indigo-400"
+              />
+              <span>
+                <span className="block text-xs font-medium text-indigo-200">
+                  Mặc định dùng Gemini AI đối chiếu trong Kết hợp Whisper + OCR
+                </span>
+                <span className="mt-0.5 block text-[10px] text-text-muted">
+                  Khi chạy Kết hợp Whisper + OCR (nếu đã cài Gemini API Key), AI sẽ so sánh lời thoại ASR và chữ OCR để sửa lỗi đồng âm &amp; tách bảng/biểu đồ lạc sang .overlay.srt.
                 </span>
               </span>
             </label>

@@ -19,9 +19,16 @@ function validate(content: string) {
   if (parseSrtStrict(content).length === 0) throw new Error('File SRT không có dòng phụ đề hợp lệ.');
 }
 
-function invalidate(task: Task, original: boolean) {
+function invalidate(task: Task, kind: 'primary_orig' | 'primary_trans' | 'overlay_orig' | 'overlay_trans') {
+  if (kind === 'overlay_orig' || kind === 'overlay_trans') {
+    return TaskStore.update(task.id, {
+      ...(kind === 'overlay_orig' ? { translatedOverlaySrtPath: undefined } : {}),
+      subtitleRevision: (task.subtitleRevision || 0) + 1,
+      outputPath: undefined,
+    });
+  }
   return TaskStore.update(task.id, {
-    ...(original ? { translatedSrtPath: undefined } : {}),
+    ...(kind === 'primary_orig' ? { translatedSrtPath: undefined } : {}),
     subtitleRevision: (task.subtitleRevision || 0) + 1,
     ttsNeedsRegeneration: !!task.ttsAudioDir,
     ttsMergedAudioPath: undefined, ttsOverruns: undefined, outputPath: undefined,
@@ -32,12 +39,19 @@ function invalidate(task: Task, original: boolean) {
 export function saveTaskSubtitle(srtPath: string, content: string): void {
   validate(content);
   const normalize = canonicalArtifactPath;
-  const tasks = TaskStore.getAll().filter((task) => [task.srtPath, task.translatedSrtPath]
-    .some((file) => file && normalize(file) === normalize(srtPath)));
+  const target = normalize(srtPath);
+  const tasks = TaskStore.getAll().filter((task) =>
+    [task.srtPath, task.translatedSrtPath, task.overlaySrtPath, task.translatedOverlaySrtPath]
+      .some((file) => file && normalize(file) === target));
   tasks.forEach(assertIdle);
   if (fs.existsSync(srtPath) && fs.readFileSync(srtPath, 'utf-8') === content) return;
   fs.writeFileSync(srtPath, content, 'utf-8');
-  for (const task of tasks) invalidate(task, !!task.srtPath && normalize(task.srtPath) === normalize(srtPath));
+  for (const task of tasks) {
+    if (task.srtPath && normalize(task.srtPath) === target) invalidate(task, 'primary_orig');
+    else if (task.translatedSrtPath && normalize(task.translatedSrtPath) === target) invalidate(task, 'primary_trans');
+    else if (task.overlaySrtPath && normalize(task.overlaySrtPath) === target) invalidate(task, 'overlay_orig');
+    else if (task.translatedOverlaySrtPath && normalize(task.translatedOverlaySrtPath) === target) invalidate(task, 'overlay_trans');
+  }
 }
 
 export function importTaskSubtitle(id: string, source: string): Task | undefined {
@@ -48,7 +62,7 @@ export function importTaskSubtitle(id: string, source: string): Task | undefined
   validate(fs.readFileSync(source, 'utf-8'));
   const target = nextAvailablePath(getProjectArtifactPaths(task).rawSrtPath);
   fs.copyFileSync(source, target);
-  invalidate(task, true);
+  invalidate(task, 'primary_orig');
   return TaskStore.update(id, { srtPath: target, ttsVoiceOverrides: {},
     stageDescription: 'Đã nhập phụ đề — cần tạo lại bản dịch và audio nếu có' });
 }

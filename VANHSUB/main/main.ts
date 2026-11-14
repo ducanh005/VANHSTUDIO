@@ -162,7 +162,7 @@ function rememberSelection(files: string[]): string[] {
 function getMediaGrants() {
   const files = new Set(selectedMediaFiles), directories = new Set(selectedMediaDirectories)
   for (const task of TaskStore.getAll()) {
-    for (const file of [task.filePath, task.audioPath, task.srtPath, task.translatedSrtPath, task.outputPath, task.dubbedVideoPath, task.ttsMergedAudioPath]) if (file) files.add(file)
+    for (const file of [task.filePath, task.audioPath, task.srtPath, task.translatedSrtPath, task.overlaySrtPath, task.translatedOverlaySrtPath, task.outputPath, task.dubbedVideoPath, task.ttsMergedAudioPath]) if (file) files.add(file)
     for (const dir of [task.projectDir, task.ttsAudioDir]) if (dir) directories.add(dir)
   }
   const config = getAiStudioStore().store
@@ -757,8 +757,10 @@ const SETTING_KEYS: Array<keyof AppSettings> = [
   'ocrFps',
   'ocrMode',
   'ocrCustomRegion',
+  'ocrDualRegions',
   'ocrRegion',
   'ocrDualEngine',
+  'hybridUseGeminiAi',
   'glossary',
   'translationStyleGuide',
   'onboardingCompleted',
@@ -831,10 +833,10 @@ handleRendererIpc('ocr:cancel', async (_event, id: string) => {
 })
 
 // Dịch thuật AI qua TranslateRunner
-handleRendererIpc('translate:start', async (_event, id: string, targetLanguage?: string) => {
+handleRendererIpc('translate:start', async (_event, id: string, targetLanguage?: string, options?: { targetTrack?: 'primary' | 'overlay' | 'both' }) => {
   return launchTaskOperation(id, () => TranslateRunner.runTranslate(id, targetLanguage, () => {
     broadcastTasksUpdate()
-  }))
+  }, options ?? undefined))
 })
 
 // Huỷ dịch đang chạy (hiệu lực sau khi batch hiện tại xong)
